@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>CANA TYCOON — Simulador de Safra 16-bits</title>
 <!--
   ══════════════════════════════════════════════════════════════════════
@@ -52,6 +52,18 @@
     background:repeating-linear-gradient(0deg, rgba(0,0,0,.14) 0 1px, transparent 1px 3px);
     mix-blend-mode:multiply;
   }
+  #frame:fullscreen {
+    max-width:none; width:100%; height:100%;
+    border:none; border-radius:0; box-shadow:none; background:#000;
+    display:flex; align-items:center; justify-content:center;
+  }
+  #frame:fullscreen canvas { width:min(100vw, 177.77vh); height:auto; border-radius:0; }
+  #frame:-webkit-full-screen {
+    max-width:none; width:100%; height:100%;
+    border:none; border-radius:0; box-shadow:none; background:#000;
+    display:flex; align-items:center; justify-content:center;
+  }
+  #frame:-webkit-full-screen canvas { width:min(100vw, 177.77vh); height:auto; border-radius:0; }
   footer { font-size:11px; color:#8aa178; letter-spacing:.5px; text-align:center; user-select:none; }
   footer b { color:#cfe0b8; }
 </style>
@@ -170,7 +182,7 @@ function offscreen(w, h) {
    Arrays são SEMPRE mutados no lugar (length=0) para manter refs.     */
 const G = {
   fase: 'menu',            // menu | colheita | plantio | oficina | fim
-  pausa: false, ajuda: false,
+  pausa: false, ajuda: false, ajudaPag: 0, telaCheia: false,
   dia: 1,
   hora: CFG.HORA_INI,      // minutos do dia
   grana: CFG.GRANA_INICIAL,
@@ -1443,6 +1455,32 @@ function atualizarDrones(dt) {
 /* ═══════════════════════════════════════════════════════ render ════ */
 let LUZ = null, luzc = null, VIN = null;
 const botoesTela = [];                            // hit-test dos botões do HUD
+const frameEl = document.getElementById('frame');
+
+function emTelaCheia() {
+  return !!(document.fullscreenElement || document.webkitFullscreenElement);
+}
+function alternarTelaCheia() {
+  if (!emTelaCheia()) {
+    const req = frameEl && (frameEl.requestFullscreen || frameEl.webkitRequestFullscreen);
+    if (req) {
+      const p = req.call(frameEl);
+      if (p && p.catch) p.catch(() => {});
+      try {
+        if (typeof screen !== 'undefined' && screen.orientation && screen.orientation.lock)
+          screen.orientation.lock('landscape').catch(() => {});
+      } catch (e) { /* trava de orientação é opcional */ }
+    } else {
+      toast('📱 Navegador sem tela cheia — no iPhone use "Compartilhar → Adicionar à Tela de Início"', 4);
+    }
+  } else {
+    const sair = document.exitFullscreen || document.webkitExitFullscreen;
+    if (sair) sair.call(document);
+  }
+}
+function aoMudarTela() { G.telaCheia = emTelaCheia(); }
+document.addEventListener('fullscreenchange', aoMudarTela);
+document.addEventListener('webkitfullscreenchange', aoMudarTela);
 
 function comprarUpg(k) {
   const u = CFG.UPG[k];
@@ -2007,6 +2045,25 @@ function desenharHUD() {
     }
   }
 
+  if (G.fase === 'colheita' || G.fase === 'plantio') {              // ⛶ e ? flutuantes
+    const iy = TOQUE ? H - 196 : H - 68;
+    const icones = [
+      [G.telaCheia ? '⊡' : '⛶', alternarTelaCheia],
+      ['?', () => { G.ajuda = true; G.ajudaPag = 0; }],
+    ];
+    ctx.textAlign = 'center';
+    icones.forEach(([rot, cb], i) => {
+      const ix = 12 + i * 38;
+      ctx.fillStyle = 'rgba(18,26,14,.7)'; ctx.fillRect(ix, iy, 32, 32);
+      ctx.strokeStyle = 'rgba(220,230,200,.5)'; ctx.lineWidth = 2;
+      ctx.strokeRect(ix, iy, 32, 32);
+      ctx.fillStyle = '#eef2e0'; ctx.font = '700 16px "Courier New", monospace';
+      ctx.fillText(rot, ix + 16, iy + 22);
+      botoesTela.push({ x: ix, y: iy, w: 32, h: 32, cb });
+    });
+    ctx.textAlign = 'left';
+  }
+
   if (TOQUE && (G.fase === 'colheita' || G.fase === 'plantio')) {   // D-Pad virtual
     ctx.font = '700 20px "Courier New", monospace'; ctx.textAlign = 'center';
     for (const z of DPAD_ZONAS) {
@@ -2036,7 +2093,7 @@ function painel(wp, hp) {
 
 function desenharMenu() {
   ctx.fillStyle = 'rgba(8,12,6,.55)'; ctx.fillRect(0, 0, W, H);
-  const { x, y } = painel(660, 396);
+  const { x, y } = painel(660, 430);
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd94d';
   ctx.font = '700 44px "Courier New", monospace';
@@ -2065,8 +2122,12 @@ function desenharMenu() {
   ctx.fillStyle = '#ffd94d';
   ctx.globalAlpha = 0.6 + 0.4 * Math.sin(G.t * 4);
   ctx.font = '700 17px "Courier New", monospace';
-  ctx.fillText('ESPAÇO ou TOQUE para assumir a máquina', W / 2, y + 366);
+  ctx.fillText('ESPAÇO ou TOQUE para assumir a máquina', W / 2, y + 362);
   ctx.globalAlpha = 1; ctx.textAlign = 'left';
+  chip(x + 36, y + 380, 190, 36, '📖 COMO JOGAR  H', null, true,
+       () => { G.ajuda = true; G.ajudaPag = 0; });
+  chip(x + 434, y + 380, 190, 36, (G.telaCheia ? '⊡ SAIR DA TELA' : '⛶ TELA CHEIA  F'), null, true,
+       alternarTelaCheia);
 }
 
 function desenharOficina() {
@@ -2155,35 +2216,135 @@ function desenharPausa() {
   ctx.textAlign = 'left';
 }
 
+const AJUDA_PAGS = [
+  { t: '🎯 O CONTRATO (objetivo)', l: [
+    'Você opera uma colhedora sob contrato. Cada dia vai das 06:00',
+    'às 22:00 (~4,5 min reais) e exige VENDER um valor mínimo:',
+    '• Meta do dia: $200 no dia 1, subindo +$110 por dia.',
+    '• Só dinheiro VENDIDO conta — carga na caçamba não vale.',
+    '• Bateu a meta → Oficina (upgrades e bolsa) → Plantio → dia novo.',
+    'O contrato acaba se: meta não atingida às 22:00; cota de',
+    'plantio impagável; máquina sem diesel/dinheiro/carga/bolsa;',
+    'ou motor quebrado sem recursos para o conserto.',
+    'Recordes de dias e pico de caixa ficam salvos no navegador.',
+  ]},
+  { t: '🎮 CONTROLES', l: [
+    'WASD / setas .... dirigir (as esteiras giram no próprio eixo)',
+    '1 ............... diesel via drone ($1,2/L · METADE na usina)',
+    '2 ............... conserto do motor ($1,5 por ponto)',
+    '3 ............... vender a carga via drone (frete −20%)',
+    '4 ............... drone bombeiro ($100, apaga todos os focos)',
+    '5 ............... defensivo agrícola ($40, previne/cura broca)',
+    'B ............... resgate rápido da bolsa (taxa de −10%)',
+    'ESPAÇO / Q ...... plantar muda · alternar normal/premium',
+    'ENTER ........... oficina→plantio · encerrar o plantio',
+    'P · M · H · F ... pausa · som · este manual · tela cheia',
+    'CELULAR: D-Pad e botões na tela · toque livre planta no plantio.',
+  ]},
+  { t: '🌾 COLHEITA & VENDA', l: [
+    'O cortador fica na FRENTE: passe por cima das touceiras em',
+    'movimento para colher. Cana comum vale $9; PREMIUM vale 3x.',
+    'A caçamba tem limite (30 no início) — cheia, não corta mais.',
+    'Duas rotas de venda:',
+    '• DRONE (3): vende na hora, em qualquer lugar, com −20%.',
+    '• USINA: entre na zona amarela DESCARGA = 100% do valor,',
+    '  e o diesel ali custa metade. Vale a viagem!',
+    'Preço do dia: ▲ALTA x1,4 · ●NORMAL x1,0 · ▼BAIXA x0,7.',
+    '⚡ FRENESI (55% dos dias): janela onde TODA venda vale x2.',
+    'COMBO: cortar sem parar sobe até x4 → TURBO por 6s:',
+    'velocidade 2x, diesel zero, fogo no escapamento e corte +50%.',
+  ]},
+  { t: '🔧 A MÁQUINA', l: [
+    'DIESEL: gasta andando (0,40 L/s). Chuva +25%, orvalho após',
+    'as 19h +10%, plantio pela metade, turbo consome ZERO.',
+    'MOTOR (integridade): desgasta naturalmente rodando e sofre',
+    'com impactos — pedra −8, tronco −5, fogo −7/s, capivara −30.',
+    'Chegou a 0 → QUEBRA: a máquina para até o conserto (2).',
+    '⚙ CAIXAS DE PEÇAS (6/dia, douradas no radar): pegue de graça',
+    '+10 de motor e +$20 — ótimas para manutenção preventiva!',
+    'Sem diesel e sem dinheiro? Venda a carga (3) ou resgate a',
+    'bolsa (B). Sem NENHUMA saída, o contrato é encerrado.',
+  ]},
+  { t: '⚠️ PERIGOS DO CAMPO', l: [
+    'CAPIVARAS: moram perto das lagoas e dormem após as 18:30.',
+    'Atropelar = −30 de motor + MULTA AMBIENTAL de $120.',
+    'RAIOS (tempo seco) acendem FOGO que se espalha a cada 2s e',
+    'queima a touceira em 3,6s. Bombeiro (4) apaga tudo por $100;',
+    'a chuva também apaga de graça.',
+    'CHUVA (40% dos dias): pista 20% mais lenta + poças de LAMA.',
+    'Esteiras melhores (oficina) reduzem a penalidade da lama.',
+    'PEDRAS e TRONCOS são sólidos e machucam em velocidade.',
+    'LAGOAS barram a máquina — contorne pela margem.',
+    'NOITE: visão fecha e os faróis iluminam um cone à frente.',
+  ]},
+  { t: '🐛 BROCA & DEFENSIVO', l: [
+    'Em 65% dos dias, num horário aleatório, estoura um surto de',
+    'BROCA DA CANA em touceiras NÃO tratadas:',
+    '• Salta para uma vizinha a cada 4 segundos.',
+    '• Cana broqueada colhida vale METADE do valor.',
+    '• Se demorar ~26s, a touceira morre e vira palha seca.',
+    '🧪 DEFENSIVO (5, $40) tem dois usos:',
+    '• No PLANTIO: trata uma ÁREA (círculo verde) — mudas e até a',
+    '  soqueira que nascer ali já vêm protegidas a safra inteira.',
+    '• Na COLHEITA: cura e imuniza na hora as touceiras ao redor.',
+    'Protegidas têm marca verde; focos piscam LARANJA no radar.',
+  ]},
+  { t: '🌱 PLANTIO & OFICINA', l: [
+    'PLANTIO (relógio parado): o mapa é limpo e você semeia a',
+    'próxima safra. ESPAÇO planta à frente (fantasma verde = ok).',
+    'Q alterna a muda: normal $10 ou PREMIUM $30 (vira cana 3x).',
+    'A COTA de mudas é obrigatória (22 no dia 1, +5/dia) — sem',
+    'poder pagá-la, o contrato cai. ENTER encerra quando cumprir.',
+    'SOQUEIRA: 35% das touceiras cortadas REBROTAM DE GRAÇA na',
+    'safra seguinte (protegidas, se dentro de área tratada).',
+    'OFICINA: upgrades permanentes em 3 níveis — MOTOR (velocid.),',
+    'ESTEIRAS (lama), CAÇAMBA (carga) e TANQUE (litros).',
+    'Carga não vendida fica na caçamba para o dia seguinte.',
+  ]},
+  { t: '📈 BOLSA — CANA11', l: [
+    'Na OFICINA, aplique seu lucro no pregão da CANA11:',
+    'botões +1 · +5 · −1 · ZERAR, com gráfico do histórico.',
+    'O papel se move todo dia (−14% a +20%, leve viés de alta) e',
+    'tem 12% de chance de evento extremo: crash ou disparada!',
+    'Durante o expediente ele ainda oscila de leve — acompanhe no',
+    'TICKER abaixo do radar, junto da sua posição 💼.',
+    'B = RESGATE RÁPIDO em jogo: vende tudo com taxa de −10%.',
+    'Ficou sem caixa com cotas na mão? O jogo avisa para resgatar',
+    'em vez de encerrar o contrato.',
+    'Importante: a bolsa NÃO conta para a meta das 22:00.',
+  ]},
+];
+function pagAjuda(d) {
+  const n = AJUDA_PAGS.length;
+  G.ajudaPag = (((G.ajudaPag || 0) + d) % n + n) % n;
+}
 function desenharAjuda() {
-  ctx.fillStyle = 'rgba(8,12,6,.7)'; ctx.fillRect(0, 0, W, H);
-  const { x, y } = painel(660, 520);
-  ctx.fillStyle = '#ffd94d'; ctx.font = '700 22px "Courier New", monospace';
-  ctx.textAlign = 'center'; ctx.fillText('📖 MANUAL DO OPERADOR', W / 2, y + 40);
+  botoesTela.length = 0;                            // manual captura os toques
+  ctx.fillStyle = 'rgba(8,12,6,.8)'; ctx.fillRect(0, 0, W, H);
+  const { x, y } = painel(700, 470);
+  const pg = AJUDA_PAGS[(G.ajudaPag || 0) % AJUDA_PAGS.length];
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd94d'; ctx.font = '700 20px "Courier New", monospace';
+  ctx.fillText('📖 MANUAL DO OPERADOR', W / 2, y + 34);
+  ctx.fillStyle = '#eef2e0'; ctx.font = '700 15px "Courier New", monospace';
+  ctx.fillText(pg.t, W / 2, y + 62);
+  AJUDA_PAGS.forEach((p, i) => {                    // bolinhas das páginas
+    ctx.fillStyle = i === (G.ajudaPag || 0) ? '#ffd94d' : '#4a5540';
+    ctx.beginPath();
+    ctx.arc(W / 2 - (AJUDA_PAGS.length - 1) * 9 + i * 18, y + 80, 4, 0, 7);
+    ctx.fill();
+  });
   ctx.textAlign = 'left';
   ctx.fillStyle = '#dfe8d2'; ctx.font = '13px "Courier New", monospace';
-  const li = [
-    'WASD / setas ..... dirigir (esteiras giram no lugar)',
-    '1 ................ diesel via drone (50% mais barato na usina!)',
-    '2 ................ conserto do motor ($' + CFG.PRECO_REPARO + '/pt)',
-    '3 ................ vender carga via drone (frete −20%)',
-    '4 ................ drone bombeiro ($' + CFG.PRECO_BOMBEIRO + ', apaga tudo)',
-    '5 ................ defensivo 🧪 ($' + CFG.DEFENSIVO_CUSTO + '): previne e cura a BROCA',
-    'B ................ resgate rápido da bolsa (taxa −10%)',
-    'ESPAÇO / Q ....... plantar · alternar muda normal/premium',
-    'P / M / H ........ pausa · som · este manual',
-    '',
-    'Zona amarela da usina: descarga com 100% do valor da carga.',
-    'Combo x4 ativa o TURBO: 2x veloz, diesel 0 e corte +50%.',
-    'BROCA 🐛 infesta canas sem trato: broqueada vale metade e morre.',
-    'Trate no PLANTIO (área) ou cure na colheita com o defensivo.',
-    'BOLSA 📈: aplique lucro na oficina; sobe e desce todo dia.',
-    'Contrato 📜 paga bônus · FRENESI ⚡ dobra vendas · peças ⚙ grátis.',
-    'Chuva faz lama e apaga fogo · capivaras moram nas lagoas.',
-  ];
-  li.forEach((l, i) => ctx.fillText(l, x + 40, y + 66 + i * 24));
-  ctx.fillStyle = '#9fbf8a';
-  ctx.fillText('H para voltar', x + 40, y + 494);
+  pg.l.forEach((l, i) => ctx.fillText(l, x + 42, y + 110 + i * 24));
+  chip(x + 26, y + 412, 118, 36, '◀  A', null, true, () => pagAjuda(-1));
+  chip(x + 556, y + 412, 118, 36, 'D  ▶', null, true, () => pagAjuda(1));
+  chip(x + 288, y + 412, 124, 36, '✕ FECHAR  H', null, true, () => { G.ajuda = false; });
+  ctx.fillStyle = '#9fbf8a'; ctx.font = '11px "Courier New", monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('página ' + ((G.ajudaPag || 0) + 1) + '/' + AJUDA_PAGS.length +
+               ' · toque na tela ou use A/D para navegar', W / 2, y + 464);
+  ctx.textAlign = 'left';
 }
 
 function desenharFim() {
@@ -2251,6 +2412,13 @@ window.addEventListener('keydown', e => {
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
   auInit();
   if (e.repeat) return;
+  if (G.ajuda) {                                    // manual aberto: navega
+    if (e.code === 'ArrowLeft' || e.code === 'KeyA') { pagAjuda(-1); return; }
+    if (e.code === 'ArrowRight' || e.code === 'KeyD') { pagAjuda(1); return; }
+    if (e.code === 'KeyH' || e.code === 'Escape' || e.code === 'Space') { G.ajuda = false; return; }
+    if (e.code === 'KeyF') { alternarTelaCheia(); return; }
+    return;
+  }
   switch (e.code) {
     case 'KeyW': case 'ArrowUp': kb.fwd = true; break;
     case 'KeyS': case 'ArrowDown': kb.re = true; break;
@@ -2282,7 +2450,8 @@ window.addEventListener('keydown', e => {
       if (G.fase === 'colheita' || G.fase === 'plantio') G.pausa = !G.pausa;
       break;
     case 'KeyM': alternarMudo(); break;
-    case 'KeyH': G.ajuda = !G.ajuda; break;
+    case 'KeyH': G.ajuda = true; G.ajudaPag = 0; break;
+    case 'KeyF': alternarTelaCheia(); break;
   }
   sincDpad();
 });
@@ -2303,6 +2472,7 @@ canvas.addEventListener('pointerdown', e => {
     const b = botoesTela[i];
     if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { b.cb(); return; }
   }
+  if (G.ajuda) { pagAjuda(1); return; }
   if (TOQUE) {
     const z = zonaEm(x, y);
     if (z && (G.fase === 'colheita' || G.fase === 'plantio')) {
@@ -2358,7 +2528,7 @@ globalThis.__T = {
          irPlantio, encerrarPlantio, caiRaio, acender, fim, sortearDia, novaCana,
          comprarUpg, update, uv, localPt, render,
          infestar, lancarPraga, aplicarDefensivo, comprarCotas, venderCotas,
-         resgatarBolsa, bolsaValor },
+         resgatarBolsa, bolsaValor, pagAjuda, alternarTelaCheia },
   dpad,
 };
 </script>
