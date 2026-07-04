@@ -1,0 +1,1652 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>CANA TYCOON — Simulador de Safra 16-bits</title>
+<!--
+  ══════════════════════════════════════════════════════════════════════
+  CANA TYCOON — simulador de estratégia agroindustrial top-down, 16-bits
+  Arquivo único e autocontido: sprites desenhados em canvas na abertura
+  e som 8-bit 100% sintetizado via Web Audio (zero arquivos externos).
+  Tudo que dá para calibrar está no objeto CFG, logo no topo do script.
+  Recordes persistem via localStorage (canaTycoon_recDias / _recGrana).
+  ══════════════════════════════════════════════════════════════════════
+-->
+<style>
+  :root { --terra:#3d2b1f; --painel:#1c2416; --verde:#59aa48; --amarelo:#f0c814; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 50% -10%, #24371c 0%, transparent 60%),
+      repeating-linear-gradient(0deg, #10160c 0 3px, #0d120a 3px 6px);
+    color:#dfe8d2;
+    font-family:"Courier New", monospace;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    min-height:100%; gap:10px; padding:10px;
+    touch-action:none; overflow:hidden;
+  }
+  h1 {
+    font-size:clamp(15px, 2.6vw, 22px); letter-spacing:4px; color:var(--amarelo);
+    text-shadow:0 2px 0 #7a5c00, 0 4px 0 #241c00; user-select:none;
+  }
+  h1 small { color:#9fbf8a; letter-spacing:1px; font-size:.6em; }
+  #frame {
+    position:relative; line-height:0;
+    border:4px solid #4a3826; border-radius:8px;
+    box-shadow:0 0 0 3px #141a0f, 0 14px 40px rgba(0,0,0,.6), inset 0 0 0 2px #202c18;
+    background:#0a0f08; max-width:min(96vw, 1180px); width:100%;
+  }
+  canvas {
+    width:100%; height:auto; display:block; border-radius:4px;
+    image-rendering:pixelated; image-rendering:crisp-edges;
+    cursor:crosshair;
+  }
+  footer { font-size:11px; color:#8aa178; letter-spacing:.5px; text-align:center; user-select:none; }
+  footer b { color:#cfe0b8; }
+</style>
+</head>
+<body>
+  <h1>🚜 CANA TYCOON <small>· simulador de safra</small></h1>
+  <div id="frame"><canvas id="game" width="960" height="540"></canvas></div>
+  <footer>
+    <b>WASD/setas</b> dirigir · <b>1</b> diesel · <b>2</b> conserto · <b>3</b> vender (drone) ·
+    <b>4</b> bombeiro · <b>ESPAÇO</b> plantar · <b>Q</b> muda premium · <b>P</b> pausa · <b>M</b> som · <b>H</b> ajuda
+  </footer>
+
+<script>
+'use strict';
+/* ══════════════════════════════════════════════════════════ CFG ═════
+   Painel de calibração do jogo inteiro. Mexa à vontade.               */
+const CFG = {
+  W: 960, H: 540,                    // resolução lógica da tela
+  MAPA_W: 2400, MAPA_H: 1800,        // tamanho do mundo (px)
+
+  /* relógio: o dia de colheita vai das 06:00 às 22:00 */
+  HORA_INI: 6 * 60, HORA_FIM: 22 * 60,
+  MIN_POR_SEG: 3.6,                  // minutos de jogo por segundo real (~4,4 min/dia)
+
+  /* colhedora */
+  VEL_RE: 0.55,                      // fator da marcha ré
+  GIRO: 2.7,                         // rad/s de rotação das esteiras
+  CONSUMO_MOVE: 0.40,                // L/s andando
+  CONSUMO_PARADO: 0.05,              // L/s em marcha lenta
+  ALCANCE_CORTE: 38,                 // distância do cortador à frente
+  RAIO_CORTE: 24,
+
+  /* economia */
+  GRANA_INICIAL: 150,
+  CANA_VALOR: 9,                     // valor-base da cana comum
+  PREMIUM_MULT: 3,                   // cana premium vale 3x
+  MUDA_NORMAL: 10, MUDA_PREMIUM: 30,
+  TAXA_DRONE: 0.20,                  // frete do drone de venda
+  PRECO_LITRO: 1.2,
+  PRECO_REPARO: 1.5,                 // $ por ponto de integridade
+  MULTA_CAPIVARA: 120,
+  PRECO_BOMBEIRO: 100,
+  META_BASE: 200, META_POR_DIA: 110, // meta financeira: base + (dia-1)*isto
+  PLANTIO_BASE: 22, PLANTIO_POR_DIA: 5,
+  TENDENCIAS: [                      // [nome, multiplicador, peso, seta]
+    ['ALTA', 1.4, 1, '▲'], ['NORMAL', 1.0, 2, '●'], ['BAIXA', 0.7, 1, '▼'],
+  ],
+
+  /* combo & turbo */
+  COMBO_GANHO: 0.13, COMBO_JANELA: 3.0, COMBO_MAX: 4.0,
+  TURBO_DUR: 6.0,
+
+  /* natureza */
+  N_PEDRAS: 18, N_CAPIVARAS: 7,
+  DANO_PEDRA: 8, DANO_CAPIVARA: 30, DANO_FOGO_S: 7,
+  CHANCE_CHUVA: 0.4,                 // por dia
+  CHANCE_RAIO_S: 0.003,              // prob./segundo de raio em tempo seco (~0,8/dia)
+  FOGO_ESPALHA_T: 2.0, FOGO_QUEIMA_T: 3.6, FOGO_RAIO: 56,
+  LAMA_MAX: 40,
+  SOQUEIRA: 0.35,                    // fração das canas cortadas que rebrota grátis
+
+  /* upgrades da oficina: [nível 0..3] + preços dos níveis 1..3 */
+  UPG: {
+    motor:    { nome: 'MOTOR',    desc: 'velocidade máxima',      val: [128, 150, 172, 196], precos: [200, 450, 850],  un: ' px/s' },
+    esteiras: { nome: 'ESTEIRAS', desc: 'tração na lama',         val: [0.50, 0.63, 0.75, 0.87], precos: [180, 400, 750], un: '' },
+    cacamba:  { nome: 'CAÇAMBA',  desc: 'capacidade de carga',    val: [30, 45, 65, 90],     precos: [220, 480, 900],  un: ' un' },
+    tanque:   { nome: 'TANQUE',   desc: 'litros de diesel',       val: [100, 140, 190, 250], precos: [160, 380, 700],  un: ' L' },
+  },
+
+  CHAVE_REC_DIAS: 'canaTycoon_recDias',
+  CHAVE_REC_GRANA: 'canaTycoon_recGrana',
+  CHAVE_MUDO: 'canaTycoon_mudo',
+};
+const W = CFG.W, H = CFG.H, MW = CFG.MAPA_W, MH = CFG.MAPA_H;
+
+/* ═══════════════════════════════════════════════════════ utils ═════ */
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const rand = (a, b) => a + Math.random() * (b - a);
+const randi = (a, b) => (a + Math.random() * (b - a + 1)) | 0;
+const escolha = arr => arr[(Math.random() * arr.length) | 0];
+const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
+const $ = n => '$' + Math.floor(n);
+const hhmm = m => String((m / 60) | 0).padStart(2, '0') + ':' + String((m | 0) % 60).padStart(2, '0');
+
+function sorteioPesado(lista) {                 // lista de [..., peso em i=2]
+  const total = lista.reduce((s, o) => s + o[2], 0);
+  let r = Math.random() * total;
+  for (const o of lista) { r -= o[2]; if (r <= 0) return o; }
+  return lista[0];
+}
+
+/* ══════════════════════════════════════════════════════ canvas ═════ */
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+function offscreen(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const cc = c.getContext('2d');
+  cc.imageSmoothingEnabled = false;
+  return [c, cc];
+}
+
+/* ═══════════════════════════════════════════════ estado global ═════
+   Arrays são SEMPRE mutados no lugar (length=0) para manter refs.     */
+const G = {
+  fase: 'menu',            // menu | colheita | plantio | oficina | fim
+  pausa: false, ajuda: false,
+  dia: 1,
+  hora: CFG.HORA_INI,      // minutos do dia
+  grana: CFG.GRANA_INICIAL,
+  vendidoHoje: 0,
+  meta: CFG.META_BASE,
+  tendencia: CFG.TENDENCIAS[1],
+  metaPlantio: CFG.PLANTIO_BASE,
+  plantadasHoje: 0,
+  mudaPremium: false,      // tipo de muda selecionado no plantio
+  chuva: { hoje: false, ini: 0, fim: 0, ativa: false },
+  fimMotivo: '', fimT: 0,
+  avisou21: false, avisouCarga: false, fechou: false,
+  recDias: Number(localStorage.getItem(CFG.CHAVE_REC_DIAS) || 0),
+  recGrana: Number(localStorage.getItem(CFG.CHAVE_REC_GRANA) || 0),
+  t: 0,                    // tempo global (para animações)
+  flashRaio: 0,
+};
+const nivel = { motor: 0, esteiras: 0, cacamba: 0, tanque: 0 };
+const uv = k => CFG.UPG[k].val[nivel[k]];       // valor atual de um upgrade
+
+const jog = {                                    // a colhedora
+  x: MW / 2, y: MH / 2 + 120, ang: -Math.PI / 2,
+  vel: 0, movendo: false,
+  comb: CFG.UPG.tanque.val[0], integ: 100,
+  cargaUn: 0, cargaValor: 0,
+  combo: 1, comboT: 0, turbo: 0,
+  naLama: false, quebrada: false, seco: false,
+  cdDano: 0, frame: 0,
+};
+
+const canas = [], pedras = [], capis = [], fogos = [], lamas = [],
+      cinzas = [], plantios = [], cortadas = [], parts = [], toasts = [],
+      drones = [], flutu = [];
+const cam = { x: 0, y: 0 };
+const dpad = { fwd: false, re: false, esq: false, dir: false };
+const TOQUE = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+</script>
+<script>
+'use strict';
+/* ════════════════════════════════════════ som 8-bit sintetizado ═════
+   Nada de arquivos: motor e chuva são nós persistentes; efeitos são
+   osciladores/ruídos descartáveis com envelope. Destrava no 1º gesto. */
+let mudo = localStorage.getItem(CFG.CHAVE_MUDO) === '1';
+const AU = { ctx: null, master: null, motor: null, chuva: null };
+
+function auInit() {
+  if (AU.ctx) { if (AU.ctx.resume) AU.ctx.resume(); return; }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  AU.ctx = new AC();
+  AU.master = AU.ctx.createGain();
+  AU.master.gain.value = mudo ? 0 : 0.6;
+  AU.master.connect(AU.ctx.destination);
+
+  const o = AU.ctx.createOscillator();                    // ronco do motor
+  o.type = 'sawtooth'; o.frequency.value = 50;
+  const f = AU.ctx.createBiquadFilter();
+  f.type = 'lowpass'; f.frequency.value = 340;
+  const g = AU.ctx.createGain(); g.gain.value = 0;
+  o.connect(f); f.connect(g); g.connect(AU.master); o.start();
+  AU.motor = { o, g };
+
+  const n = (AU.ctx.sampleRate * 1.5) | 0;                // chuva (ruído em loop)
+  const buf = AU.ctx.createBuffer(1, n, AU.ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  const s = AU.ctx.createBufferSource(); s.buffer = buf; s.loop = true;
+  const fc = AU.ctx.createBiquadFilter(); fc.type = 'lowpass'; fc.frequency.value = 900;
+  const gc = AU.ctx.createGain(); gc.gain.value = 0;
+  s.connect(fc); fc.connect(gc); gc.connect(AU.master); s.start();
+  AU.chuva = gc;
+}
+
+function motorSom(vel, ligado) {
+  if (!AU.motor) return;
+  const alvo = ligado ? 0.05 + (vel / 500) * 0.06 + (jog.turbo > 0 ? 0.05 : 0) : 0;
+  AU.motor.g.gain.value += (alvo - AU.motor.g.gain.value) * 0.15;
+  AU.motor.o.frequency.value = 42 + vel * 0.16 + (jog.turbo > 0 ? 38 : 0);
+}
+function chuvaSom(on) {
+  if (AU.chuva) AU.chuva.gain.value += ((on ? 0.14 : 0) - AU.chuva.gain.value) * 0.05;
+}
+
+function beep(f0, f1, dur, tipo, vol, quando = 0) {
+  if (!AU.ctx || mudo) return;
+  const t = AU.ctx.currentTime + quando;
+  const o = AU.ctx.createOscillator();
+  o.type = tipo;
+  o.frequency.setValueAtTime(f0, t);
+  o.frequency.linearRampToValueAtTime(f1, t + dur);
+  const g = AU.ctx.createGain();
+  g.gain.setValueAtTime(vol, t);
+  g.gain.linearRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(AU.master);
+  o.start(t); o.stop(t + dur + 0.02);
+}
+function ruido(dur, vol, freq = 1200, quando = 0) {
+  if (!AU.ctx || mudo) return;
+  const t = AU.ctx.currentTime + quando;
+  const n = (AU.ctx.sampleRate * dur) | 0;
+  const buf = AU.ctx.createBuffer(1, n, AU.ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const s = AU.ctx.createBufferSource(); s.buffer = buf;
+  const f = AU.ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = freq;
+  const g = AU.ctx.createGain(); g.gain.value = vol;
+  s.connect(f); f.connect(g); g.connect(AU.master);
+  s.start(t);
+}
+
+const SFX = {
+  corte()   { ruido(0.06, 0.25, 2600); beep(220, 120, 0.05, 'square', 0.10); },
+  moeda()   { beep(880, 880, 0.06, 'square', 0.16); beep(1318, 1318, 0.09, 'square', 0.16, 0.06); },
+  vendona() { SFX.moeda(); beep(1760, 1760, 0.12, 'square', 0.14, 0.14); },
+  colisao() { ruido(0.18, 0.5, 700); beep(90, 50, 0.16, 'triangle', 0.3); },
+  multa()   { beep(180, 140, 0.28, 'sawtooth', 0.22); beep(150, 110, 0.28, 'sawtooth', 0.18, 0.3); },
+  raio()    { ruido(0.5, 0.7, 3000); beep(60, 35, 0.4, 'sawtooth', 0.25); },
+  fogo()    { ruido(0.08, 0.12, 1800); },
+  turbo()   { beep(180, 720, 0.5, 'sawtooth', 0.2); beep(360, 1440, 0.5, 'square', 0.12); },
+  plantar() { beep(340, 520, 0.08, 'sine', 0.2); },
+  alarme()  { beep(880, 880, 0.09, 'square', 0.2); beep(880, 880, 0.09, 'square', 0.2, 0.14); },
+  reparo()  { ruido(0.05, 0.2, 3200); beep(500, 500, 0.05, 'square', 0.1, 0.06); ruido(0.05, 0.2, 3200, 0.12); },
+  diesel()  { beep(240, 180, 0.25, 'sine', 0.16); },
+  bombeiro(){ ruido(0.5, 0.3, 600); beep(520, 760, 0.2, 'sine', 0.1); },
+  capi()    { beep(700, 1000, 0.1, 'sine', 0.12); },
+  dia()     { beep(523, 523, 0.1, 'square', 0.16); beep(659, 659, 0.1, 'square', 0.16, 0.11); beep(784, 784, 0.16, 'square', 0.16, 0.22); },
+  fim()     { beep(392, 392, 0.16, 'square', 0.2); beep(311, 311, 0.16, 'square', 0.2, 0.18); beep(233, 233, 0.3, 'square', 0.2, 0.36); },
+  recorde() { [523, 659, 784, 1046].forEach((f, i) => beep(f, f, 0.12, 'square', 0.16, i * 0.09)); },
+};
+
+function alternarMudo() {
+  mudo = !mudo;
+  localStorage.setItem(CFG.CHAVE_MUDO, mudo ? '1' : '0');
+  if (AU.master) AU.master.gain.value = mudo ? 0 : 0.6;
+  toast(mudo ? '🔇 SOM DESLIGADO' : '🔊 SOM LIGADO');
+}
+</script>
+<script>
+'use strict';
+/* ═══════════════════════════════ sprites 16-bits (pré-renderizados) ═ */
+const SPR = {};
+const USINA = { x: MW - 320, y: 54, w: 250, h: 168 };
+USINA.zona = { x: USINA.x + 34, y: USINA.y + USINA.h + 10, w: 136, h: 78 };
+
+function fazerSprites() {
+  const S = 2;
+  const P = (cc, x, y, w, h, cor) => {
+    cc.fillStyle = cor;
+    cc.fillRect(Math.round(x * S), Math.round(y * S),
+                Math.max(1, Math.round(w * S)), Math.max(1, Math.round(h * S)));
+  };
+
+  /* colhedora top-down, virada p/ a direita (2 quadros de esteira) */
+  SPR.colhedora = [0, 1].map(fr => {
+    const [c, cc] = offscreen(28 * S, 18 * S);
+    P(cc, 1, 0, 21, 4, '#23262b'); P(cc, 1, 14, 21, 4, '#23262b');       // esteiras
+    for (let i = 0; i < 7; i++) {
+      const lx = 2 + ((i * 3 + fr * 1.5) % 19);
+      P(cc, lx, 1, 1.5, 2, '#565e66'); P(cc, lx, 15, 1.5, 2, '#565e66'); // elos
+    }
+    P(cc, 3, 3.5, 17, 11, '#2a5e1e'); P(cc, 4, 4.5, 15, 9, '#3a7d2c');   // corpo
+    P(cc, 4, 8.5, 15, 1.5, '#f0c814');                                   // faixa amarela
+    P(cc, 4, 4.5, 15, 1, '#5faa48');
+    for (const vy of [5.5, 7, 10.5, 12]) P(cc, 5, vy, 4, 0.8, '#244f18');// venezianas
+    P(cc, 12.5, 4.5, 6, 9, '#1e4715');                                   // cabine
+    P(cc, 13.5, 5.5, 4.5, 7, '#a8dcec'); P(cc, 13.5, 5.5, 1.4, 7, '#e6f7fc');
+    P(cc, 15, 3.6, 2, 1.2, '#ff9400');                                   // giroflex
+    P(cc, 6.5, 3, 1.6, 1.6, '#3a4046');                                  // escapamento
+    P(cc, 20, 1.5, 3, 15, '#33383e'); P(cc, 20, 1.5, 3, 1, '#4a5158');   // cortador
+    cc.fillStyle = '#f0c814';                                            // divisores
+    cc.beginPath(); cc.moveTo(23 * S, 1.5 * S); cc.lineTo(27.6 * S, 4.5 * S); cc.lineTo(23 * S, 7 * S); cc.fill();
+    cc.beginPath(); cc.moveTo(23 * S, 11 * S); cc.lineTo(27.6 * S, 13.5 * S); cc.lineTo(23 * S, 16.5 * S); cc.fill();
+    cc.fillStyle = '#c79f08';
+    cc.fillRect(23 * S, (4 + fr) * S, 3 * S, S); cc.fillRect(23 * S, (13 - fr) * S, 3 * S, S);
+    P(cc, 0, 7, 4, 4, '#2a5e1e'); P(cc, 0.5, 7.5, 3, 3, '#3a7d2c');      // elevador
+    P(cc, 0, 7, 1.2, 4, '#16300e');
+    return c;
+  });
+
+  /* touceiras de cana vistas de cima (variações) */
+  function canaSpr(prem, seed) {
+    const [c, cc] = offscreen(24, 24);
+    const cores = prem ? ['#e3b81e', '#c79b08', '#9a7800'] : ['#4f9b3a', '#3a7d2c', '#2a5e1e'];
+    for (let i = 0; i < 7; i++) {
+      const a = seed + i * (Math.PI * 2 / 7) + Math.sin(seed + i) * 0.25;
+      const L = 7 + ((seed * 13 + i * 7) % 4);
+      cc.strokeStyle = cores[i % 3]; cc.lineWidth = 2;
+      cc.beginPath(); cc.moveTo(12, 12);
+      cc.lineTo(12 + Math.cos(a) * L, 12 + Math.sin(a) * L); cc.stroke();
+    }
+    cc.fillStyle = prem ? '#fff3b0' : '#d8c86a'; cc.fillRect(10, 10, 4, 4);
+    if (prem) { cc.fillStyle = '#ffffff'; cc.fillRect(17, 5, 2, 2); }
+    return c;
+  }
+  SPR.cana = [canaSpr(false, 1), canaSpr(false, 2.4), canaSpr(false, 4.1)];
+  SPR.canaPrem = [canaSpr(true, 1.7), canaSpr(true, 3.3)];
+
+  { const [c, cc] = offscreen(12, 12);                                   // broto
+    cc.strokeStyle = '#7cc85a'; cc.lineWidth = 2;
+    for (const a of [-2.2, -1.57, -0.9]) {
+      cc.beginPath(); cc.moveTo(6, 9);
+      cc.lineTo(6 + Math.cos(a) * 5, 9 + Math.sin(a) * 5); cc.stroke();
+    }
+    cc.fillStyle = '#5a3d28'; cc.fillRect(4, 9, 4, 2);
+    SPR.broto = c; }
+
+  SPR.pedra = [0, 1, 2].map(v => {                                       // pedras
+    const r = 9 + v * 3;
+    const [c, cc] = offscreen(r * 2 + 4, r * 2 + 2);
+    cc.fillStyle = '#565a60'; cc.beginPath(); cc.ellipse(r + 2, r + 2, r + 1, r * 0.6, 0, 0, 7); cc.fill();
+    cc.fillStyle = '#6e7278'; cc.beginPath(); cc.ellipse(r + 2, r, r + 1, r * 0.72, 0, 0, 7); cc.fill();
+    cc.fillStyle = '#8b9096'; cc.beginPath(); cc.ellipse(r, r * 0.8, r * 0.6, r * 0.4, 0, 0, 7); cc.fill();
+    return c;
+  });
+
+  /* capivara: 2 quadros andando + dormindo */
+  function capiSpr(fr) {
+    const [c, cc] = offscreen(30, 18);
+    if (fr < 2) {
+      cc.fillStyle = '#4a3320';
+      cc.fillRect(7 + fr * 2, 13, 3, 4); cc.fillRect(13 - fr * 2, 13, 3, 4);
+      cc.fillRect(19 + fr * 2, 13, 3, 4); cc.fillRect(24 - fr * 2, 13, 3, 4);
+    }
+    cc.fillStyle = '#7a5a36'; cc.beginPath(); cc.ellipse(15, 9, 12, 6.5, 0, 0, 7); cc.fill();
+    cc.fillStyle = '#8d6b42'; cc.beginPath(); cc.ellipse(13, 7.5, 9, 4.5, 0, 0, 7); cc.fill();
+    cc.fillStyle = '#6b4d2c'; cc.beginPath(); cc.ellipse(25, 8, 5, 4.4, 0, 0, 7); cc.fill();
+    cc.fillStyle = '#4a3320'; cc.fillRect(28, 7, 2, 3);
+    cc.fillRect(23, 4, 2, 2); cc.fillRect(26, 4, 2, 2);
+    if (fr === 2) { cc.fillStyle = '#2a1d10'; cc.fillRect(24, 7, 3, 1); }
+    else { cc.fillStyle = '#1c130a'; cc.fillRect(26, 7, 2, 2); }
+    return c;
+  }
+  SPR.capi = [capiSpr(0), capiSpr(1)];
+  SPR.capiDorme = capiSpr(2);
+
+  /* usina (prédio inteiro num sprite só) */
+  { const [c, cc] = offscreen(USINA.w, USINA.h);
+    cc.fillStyle = '#7d8188'; cc.fillRect(0, 118, USINA.w, 50);              // pátio
+    cc.fillStyle = '#6b6f76'; cc.fillRect(0, 118, USINA.w, 4);
+    cc.fillStyle = '#b8552f';                                                // chaminé
+    cc.fillRect(18, 0, 22, 120);
+    cc.fillStyle = '#9a4526'; for (let y = 8; y < 116; y += 16) cc.fillRect(18, y, 22, 4);
+    cc.fillStyle = '#d8dde2'; cc.fillRect(15, 0, 28, 6);
+    cc.fillStyle = '#8f959c'; cc.fillRect(52, 46, 128, 76);                  // galpão
+    cc.fillStyle = '#aab0b8'; cc.fillRect(52, 46, 128, 8);
+    cc.fillStyle = '#4c5560'; cc.beginPath();                                // telhado
+    cc.moveTo(46, 50); cc.lineTo(116, 18); cc.lineTo(186, 50); cc.fill();
+    cc.fillStyle = '#5d6772'; for (let x = 56; x < 180; x += 14) cc.fillRect(x, 30, 3, 20);
+    cc.fillStyle = '#20262d'; cc.fillRect(96, 78, 44, 44);                   // portão
+    cc.fillStyle = '#f0c814'; cc.fillRect(96, 78, 44, 5);
+    for (let i = 0; i < 4; i++) { cc.fillStyle = '#2f3740'; cc.fillRect(60 + i * 8, 60, 5, 8); }
+    cc.fillStyle = '#cfd6dc';                                                // silo
+    cc.fillRect(196, 34, 44, 88);
+    cc.beginPath(); cc.ellipse(218, 34, 22, 12, 0, Math.PI, 0); cc.fill();
+    cc.fillStyle = '#aeb6bd'; cc.fillRect(196, 34, 8, 88);
+    cc.fillStyle = '#8f979e'; for (let y = 50; y < 118; y += 18) cc.fillRect(196, y, 44, 3);
+    cc.fillStyle = '#f0c814'; cc.fillRect(66, 128, 100, 26);                 // placa
+    cc.fillStyle = '#3a2c00'; cc.font = 'bold 19px "Courier New", monospace';
+    cc.fillText('USINA', 84, 148);
+    SPR.usina = c; }
+}
+
+/* ══════════════════════════════════════════ chão do mapa (1x) ═════ */
+let CHAO = null;
+function fazerChao() {
+  const [c, cc] = offscreen(MW, MH);
+  cc.fillStyle = '#8a9a52'; cc.fillRect(0, 0, MW, MH);
+  for (let y = 0; y < MH; y += 12) {                                     // leiras de plantio
+    cc.fillStyle = (y / 12) % 2 ? '#83944c' : '#8fa057';
+    cc.fillRect(0, y, MW, 12);
+    cc.fillStyle = 'rgba(70,84,38,.35)'; cc.fillRect(0, y + 10, MW, 2);
+  }
+  for (let i = 0; i < 2600; i++) {                                       // textura
+    cc.fillStyle = Math.random() < 0.5 ? 'rgba(60,74,30,.4)' : 'rgba(180,196,120,.35)';
+    cc.fillRect(rand(0, MW) | 0, rand(0, MH) | 0, 2, 2);
+  }
+  const alvoX = USINA.zona.x + USINA.zona.w / 2, alvoY = USINA.zona.y + 40; // estrada
+  const passos = 90;
+  for (let i = 0; i <= passos; i++) {
+    const t = i / passos;
+    const x = lerp(MW / 2, alvoX, t) + Math.sin(t * 5.5) * 60;
+    const y = lerp(MH / 2 + 140, alvoY, t);
+    cc.fillStyle = '#6b5433'; cc.beginPath(); cc.arc(x, y, 27, 0, 7); cc.fill();
+    cc.fillStyle = '#8a6b43'; cc.beginPath(); cc.arc(x, y, 22, 0, 7); cc.fill();
+  }
+  cc.fillStyle = 'rgba(40,50,24,.9)';                                    // cerca
+  for (let x = 10; x < MW; x += 64) { cc.fillRect(x, 6, 5, 14); cc.fillRect(x, MH - 20, 5, 14); }
+  for (let y = 10; y < MH; y += 64) { cc.fillRect(6, y, 14, 5); cc.fillRect(MW - 20, y, 14, 5); }
+  cc.strokeStyle = 'rgba(40,50,24,.55)'; cc.lineWidth = 2;
+  cc.strokeRect(11, 11, MW - 22, MH - 22);
+  cc.drawImage(SPR.usina, USINA.x, USINA.y);                             // usina no chão
+  cc.fillStyle = 'rgba(240,200,20,.85)';                                 // zona de descarga
+  const z = USINA.zona;
+  for (let i = 0; i < z.w; i += 16) cc.fillRect(z.x + i, z.y, 8, 4);
+  for (let i = 0; i < z.w; i += 16) cc.fillRect(z.x + i + 4, z.y + z.h - 4, 8, 4);
+  cc.strokeStyle = 'rgba(240,200,20,.8)'; cc.strokeRect(z.x, z.y, z.w, z.h);
+  cc.font = 'bold 15px "Courier New", monospace';
+  cc.fillStyle = 'rgba(60,48,0,.9)';
+  cc.fillText('DESCARGA', z.x + 24, z.y + z.h / 2 + 5);
+  CHAO = c;
+}
+
+/* ═══════════════════ grade espacial (colisão só com o que é perto) ═ */
+const CEL = 96, GW_ = Math.ceil(MW / CEL), GH_ = Math.ceil(MH / CEL);
+const grade = Array.from({ length: GW_ * GH_ }, () => []);
+const gIdx = (x, y) => clamp((y / CEL) | 0, 0, GH_ - 1) * GW_ + clamp((x / CEL) | 0, 0, GW_ - 1);
+function gAdd(c) { c.gi = gIdx(c.x, c.y); grade[c.gi].push(c); }
+function gDel(c) { const a = grade[c.gi], k = a.indexOf(c); if (k >= 0) a.splice(k, 1); }
+function gLimpar() { for (const a of grade) a.length = 0; }
+function gPerto(x, y, r, cb) {                    // varre só as células vizinhas
+  const x0 = clamp(((x - r) / CEL) | 0, 0, GW_ - 1), x1 = clamp(((x + r) / CEL) | 0, 0, GW_ - 1);
+  const y0 = clamp(((y - r) / CEL) | 0, 0, GH_ - 1), y1 = clamp(((y + r) / CEL) | 0, 0, GH_ - 1);
+  for (let cy = y0; cy <= y1; cy++)
+    for (let cx = x0; cx <= x1; cx++) {
+      const cel = grade[cy * GW_ + cx];
+      for (let i = cel.length - 1; i >= 0; i--) cb(cel[i]);
+    }
+}
+</script>
+<script>
+'use strict';
+/* ══════════════════════════════ geração de mundo e ciclo da safra ══ */
+function novaCana(x, y, prem) {
+  const c = { x, y, prem, vari: randi(0, prem ? 1 : 2), fogo: false };
+  canas.push(c); gAdd(c); return c;
+}
+const dentroUsina = (x, y, m = 0) =>
+  x > USINA.x - m && x < USINA.x + USINA.w + m && y > USINA.y - m && y < USINA.y + USINA.h + m;
+
+function lugarLivre(x, y, folga) {
+  if (x < 50 || y < 50 || x > MW - 50 || y > MH - 50) return false;
+  if (dentroUsina(x, y, 60)) return false;
+  const z = USINA.zona;
+  if (x > z.x - 40 && x < z.x + z.w + 40 && y > z.y - 40 && y < z.y + z.h + 40) return false;
+  if (dist2(x, y, MW / 2, MH / 2 + 120) < 160 ** 2) return false;      // spawn
+  for (const p of pedras) if (dist2(x, y, p.x, p.y) < (folga + p.r) ** 2) return false;
+  return true;
+}
+
+function gerarMundo() {
+  pedras.length = 0; capis.length = 0;
+  for (let i = 0; i < CFG.N_PEDRAS; i++) {
+    let x, y, t = 0;
+    do { x = rand(80, MW - 80); y = rand(80, MH - 80); } while (!lugarLivre(x, y, 60) && ++t < 80);
+    pedras.push({ x, y, r: 11 + randi(0, 2) * 3, vari: randi(0, 2) });
+  }
+  for (let i = 0; i < CFG.N_CAPIVARAS; i++) capis.push(novaCapi());
+}
+function novaCapi() {
+  let x, y, t = 0;
+  do { x = rand(120, MW - 120); y = rand(120, MH - 120); }
+  while ((!lugarLivre(x, y, 40) || dist2(x, y, jog.x, jog.y) < 300 ** 2) && ++t < 80);
+  return { x, y, ang: rand(0, 6.28), anda: false, dorme: false, estT: rand(1, 3), frame: rand(0, 9), cd: 0 };
+}
+
+function plantarCampoInicial() {                  // a safra do dia 1 já está no chão
+  const plots = [[MW/2 - 620, MH/2 - 420], [MW/2 + 180, MH/2 - 520], [MW/2 - 680, MH/2 + 180],
+                 [MW/2 + 300, MH/2 + 220], [420, MH - 560], [MW - 760, MH - 460]];
+  for (const [px, py] of plots) {
+    const cols = randi(9, 12), lins = randi(5, 7);
+    for (let l = 0; l < lins; l++)
+      for (let q = 0; q < cols; q++) {
+        const x = px + q * 26 + rand(-3, 3), y = py + l * 30 + rand(-3, 3);
+        if (lugarLivre(x, y, 16)) novaCana(x, y, false);
+      }
+  }
+  for (let i = 0; i < 6; i++) {                   // gostinho de premium no dia 1
+    let x, y, t = 0;
+    do { x = rand(200, MW - 200); y = rand(200, MH - 200); } while (!lugarLivre(x, y, 20) && ++t < 60);
+    novaCana(x, y, true);
+  }
+}
+
+function sortearDia() {
+  G.tendencia = sorteioPesado(CFG.TENDENCIAS);
+  G.meta = CFG.META_BASE + (G.dia - 1) * CFG.META_POR_DIA;
+  G.metaPlantio = CFG.PLANTIO_BASE + (G.dia - 1) * CFG.PLANTIO_POR_DIA;
+  G.vendidoHoje = 0; G.hora = CFG.HORA_INI;
+  G.avisou21 = false; G.fechou = false; G.cdCarga = 0;
+  G.chuva.hoje = Math.random() < CFG.CHANCE_CHUVA;
+  if (G.chuva.hoje) { G.chuva.ini = rand(8 * 60, 17 * 60); G.chuva.fim = G.chuva.ini + rand(90, 160); }
+  G.chuva.ativa = false;
+  fogos.length = 0; lamas.length = 0; cinzas.length = 0; cortadas.length = 0;
+  for (const cp of capis) cp.dorme = false;
+  toast('☀️ DIA ' + G.dia + ' · mercado ' + G.tendencia[3] + G.tendencia[0] +
+        ' · meta ' + $(G.meta) + ' até 22:00', 4);
+  SFX.dia();
+}
+
+function iniciarJogo() {
+  G.dia = 1; G.grana = CFG.GRANA_INICIAL; G.picoGrana = CFG.GRANA_INICIAL; G.novoRec = false;
+  nivel.motor = nivel.esteiras = nivel.cacamba = nivel.tanque = 0;
+  jog.x = MW / 2; jog.y = MH / 2 + 120; jog.ang = -Math.PI / 2; jog.vel = 0;
+  jog.comb = uv('tanque'); jog.integ = 100;
+  jog.cargaUn = 0; jog.cargaValor = 0;
+  jog.combo = 1; jog.comboT = 0; jog.turbo = 0;
+  jog.quebrada = false; jog.seco = false; jog.cdDano = 0;
+  canas.length = 0; gLimpar();
+  plantios.length = 0; parts.length = 0; toasts.length = 0; drones.length = 0; flutu.length = 0;
+  gerarMundo(); plantarCampoInicial(); sortearDia();
+  G.fase = 'colheita'; G.pausa = false; G.ajuda = false;
+}
+
+function fim(motivo) {
+  if (G.fase === 'fim') return;
+  G.fase = 'fim'; G.fimMotivo = motivo; G.fimT = 0;
+  const diasCompletos = motivo === 'plantio' ? G.dia : G.dia - 1;
+  G.diasFinal = diasCompletos;
+  if (diasCompletos > G.recDias) {
+    G.recDias = diasCompletos; G.novoRec = true;
+    localStorage.setItem(CFG.CHAVE_REC_DIAS, G.recDias);
+    setTimeout(() => SFX.recorde(), 700);
+  }
+  if ((G.picoGrana | 0) > G.recGrana) {
+    G.recGrana = G.picoGrana | 0;
+    localStorage.setItem(CFG.CHAVE_REC_GRANA, G.recGrana);
+  }
+  SFX.fim();
+}
+
+/* ═══════════════════════════════════════════════ update por frame ══ */
+function localPt(ox, oy) {
+  const c = Math.cos(jog.ang), s = Math.sin(jog.ang);
+  return [jog.x + c * ox - s * oy, jog.y + s * ox + c * oy];
+}
+function tremer(t) { G.tremor = Math.max(G.tremor || 0, t); }
+
+function update(dt) {
+  G.t += dt;
+  G.flashRaio = Math.max(0, G.flashRaio - dt * 2.2);
+  G.tremor = Math.max(0, (G.tremor || 0) - dt);
+  atualizarParts(dt); atualizarToasts(dt); atualizarFlutu(dt); atualizarDrones(dt);
+
+  if (G.fase === 'fim') { G.fimT += dt; motorSom(0, false); chuvaSom(false); return; }
+  if (G.fase === 'menu' || G.fase === 'oficina') { motorSom(0, false); chuvaSom(false); return; }
+  if (G.pausa || G.ajuda) { motorSom(0, false); return; }
+
+  const colhendo = G.fase === 'colheita';
+  if (colhendo) relogio(dt);
+  if (G.fase === 'fim') return;                   // relógio pode encerrar o dia
+  moverJogador(dt, colhendo);
+  if (G.fase === 'fim') return;
+  if (colhendo) {
+    cortar();
+    atualizarCapis(dt);
+    atualizarFogos(dt);
+    clima(dt);
+    if (Math.random() < dt * 2)                   // fumaça da chaminé
+      part(USINA.x + 29, USINA.y + 2, { vx: [-6, 8], vy: [-26, -12], vida: [1.2, 2.2],
+        tam: [3, 6], cores: ['rgba(205,210,215,.5)', 'rgba(160,166,172,.45)'], grav: -6, n: 1 });
+  } else {
+    chuvaSom(false);
+    const possivel = G.grana + jog.cargaValor * G.tendencia[1] * (1 - CFG.TAXA_DRONE);
+    if (G.plantadasHoje < G.metaPlantio && possivel < CFG.MUDA_NORMAL) fim('plantio');
+  }
+  combos(dt);
+  motorSom(Math.abs(jog.vel), true);
+}
+
+function relogio(dt) {
+  G.hora += dt * CFG.MIN_POR_SEG;
+  if (!G.avisou21 && G.hora >= 21 * 60) {
+    G.avisou21 = true;
+    toast('⏰ 21:00 — última hora! Venda a carga!', 3); SFX.alarme();
+  }
+  if (!G.fechou && G.hora >= CFG.HORA_FIM) {
+    G.fechou = true; jog.vel = 0;
+    if (G.vendidoHoje >= G.meta) {
+      G.fase = 'oficina';
+      toast('✅ META BATIDA! Lucros liberados na oficina', 3); SFX.recorde();
+    } else fim('meta');
+  }
+}
+
+function moverJogador(dt, colhendo) {
+  const parado = jog.quebrada || jog.seco;
+  const velMax = uv('motor') * (jog.turbo > 0 ? 2 : 1) * (colhendo ? 1 : 0.9);
+  let alvo = 0;
+  if (!parado) {
+    if (dpad.fwd) alvo = velMax;
+    else if (dpad.re) alvo = -velMax * CFG.VEL_RE;
+    if (dpad.esq || dpad.dir) {
+      const g = CFG.GIRO * (0.8 + 0.4 * (nivel.esteiras / 3));
+      jog.ang += (dpad.dir ? 1 : -1) * g * dt;
+    }
+  }
+  jog.naLama = false;
+  for (const l of lamas)
+    if (dist2(jog.x, jog.y, l.x, l.y) < l.r * l.r) { jog.naLama = true; break; }
+  let fator = 1;
+  if (jog.naLama) fator *= uv('esteiras');
+  if (G.chuva.ativa) fator *= 0.8;
+  alvo *= fator;
+  jog.vel += (alvo - jog.vel) * Math.min(1, dt * 4.5);
+  if (alvo === 0 && Math.abs(jog.vel) < 2) jog.vel = 0;
+  jog.movendo = Math.abs(jog.vel) > 8;
+  jog.frame += Math.abs(jog.vel) * dt * 0.06;
+
+  jog.x = clamp(jog.x + Math.cos(jog.ang) * jog.vel * dt, 34, MW - 34);
+  jog.y = clamp(jog.y + Math.sin(jog.ang) * jog.vel * dt, 34, MH - 34);
+
+  if (dentroUsina(jog.x, jog.y, 26)) {            // prédio é sólido
+    const l = jog.x - (USINA.x - 26), r = (USINA.x + USINA.w + 26) - jog.x;
+    const t = jog.y - (USINA.y - 26), b = (USINA.y + USINA.h + 26) - jog.y;
+    const m = Math.min(l, r, t, b);
+    if (m === l) jog.x = USINA.x - 26;
+    else if (m === r) jog.x = USINA.x + USINA.w + 26;
+    else if (m === t) jog.y = USINA.y - 26;
+    else jog.y = USINA.y + USINA.h + 26;
+    jog.vel *= 0.4;
+  }
+
+  jog.cdDano = Math.max(0, jog.cdDano - dt);      // pedras
+  for (const p of pedras) {
+    const rr = p.r + 20, d2 = dist2(jog.x, jog.y, p.x, p.y);
+    if (d2 < rr * rr) {
+      const d = Math.sqrt(d2) || 1;
+      jog.x = p.x + (jog.x - p.x) / d * rr;
+      jog.y = p.y + (jog.y - p.y) / d * rr;
+      if (Math.abs(jog.vel) > 50 && jog.cdDano <= 0) {
+        jog.cdDano = 0.5; dano(CFG.DANO_PEDRA); jog.vel *= -0.25;
+        SFX.colisao(); tremer(0.25);
+        flut(jog.x, jog.y - 28, '−' + CFG.DANO_PEDRA + ' ⚙', '#ff8a6a');
+        part(jog.x, jog.y, { vx: [-90, 90], vy: [-120, -20], vida: [.3, .6],
+          tam: [2, 4], cores: ['#ffd94d', '#c9ced4'], grav: 300, n: 10 });
+      } else jog.vel *= 0.5;
+    }
+  }
+
+  if (jog.cargaUn > 0) {                          // descarga na usina = 100%
+    const z = USINA.zona;
+    if (jog.x > z.x && jog.x < z.x + z.w && jog.y > z.y && jog.y < z.y + z.h) vender(0);
+  }
+
+  let cons = jog.movendo ? CFG.CONSUMO_MOVE : CFG.CONSUMO_PARADO;   // diesel
+  if (!colhendo) cons *= 0.5;
+  if (jog.turbo > 0) cons = 0;
+  if (G.chuva.ativa) cons *= 1.25;
+  if (colhendo && G.hora > 19 * 60) cons *= 1.10;                   // orvalho noturno
+  jog.comb = Math.max(0, jog.comb - cons * dt);
+  const secoAgora = jog.comb <= 0;
+  if (secoAgora && !jog.seco) { toast('⛽ SEM DIESEL! Peça reabastecimento (1)', 3); SFX.alarme(); }
+  jog.seco = secoAgora;
+
+  if (jog.seco && G.grana < CFG.PRECO_LITRO && jog.cargaValor <= 0) fim('abandono');
+  if (jog.quebrada && G.grana < CFG.PRECO_REPARO && jog.cargaValor <= 0) fim('quebra');
+
+  if (jog.movendo && Math.random() < dt * 18) {   // poeira/lama das esteiras
+    const [tx, ty] = localPt(-24, rand(-14, 14));
+    part(tx, ty, { vx: [-20, 20], vy: [-20, 20], vida: [.3, .7], tam: [2, 4],
+      cores: jog.naLama || G.chuva.ativa ? ['#5a4630', '#4a3a26'] : ['#b09a6a', '#8f7c50'], grav: 0, n: 1 });
+  }
+  if (Math.random() < dt * 7) {                   // fumaça do escapamento
+    const [ex, ey] = localPt(-14, -10);
+    part(ex, ey, { vx: [-14, 6], vy: [-30, -14], vida: [.5, 1], tam: [2, 5],
+      cores: ['rgba(90,90,90,.5)', 'rgba(120,120,120,.4)'], grav: -14, n: 1 });
+  }
+}
+
+function dano(n) {
+  if (jog.integ <= 0) return;
+  jog.integ = Math.max(0, jog.integ - n);
+  if (jog.integ <= 0 && !jog.quebrada) {
+    jog.quebrada = true; jog.vel = 0;
+    toast('🔧 MOTOR QUEBROU! Use o conserto (2) para seguir', 3); SFX.alarme();
+  }
+}
+
+function cortar() {
+  if (!jog.movendo || jog.vel < 10) return;
+  const [cx, cy] = localPt(CFG.ALCANCE_CORTE, 0);
+  G.cdCarga = Math.max(0, G.cdCarga - 0.016);
+  gPerto(cx, cy, CFG.RAIO_CORTE, c => {
+    if (dist2(cx, cy, c.x, c.y) > CFG.RAIO_CORTE ** 2) return;
+    if (jog.cargaUn >= uv('cacamba')) {
+      if (G.cdCarga <= 0) { G.cdCarga = 3; toast('📦 CAÇAMBA CHEIA! Venda a carga', 2.5); SFX.alarme(); }
+      return;
+    }
+    gDel(c);
+    const k = canas.indexOf(c); if (k >= 0) canas.splice(k, 1);
+    if (c.fogo) { const f = fogos.find(f => f.c === c); if (f) fogos.splice(fogos.indexOf(f), 1); }
+    cortadas.push({ x: c.x, y: c.y });
+    jog.cargaUn++;
+    jog.cargaValor += CFG.CANA_VALOR * (c.prem ? CFG.PREMIUM_MULT : 1) * jog.combo;
+    jog.combo = Math.min(CFG.COMBO_MAX, jog.combo + CFG.COMBO_GANHO);
+    jog.comboT = CFG.COMBO_JANELA;
+    SFX.corte();
+    part(c.x, c.y, { vx: [-70, 70], vy: [-90, -20], vida: [.3, .6], tam: [2, 4],
+      cores: c.prem ? ['#ffd94d', '#fff3b0', '#c79b08'] : ['#7cc85a', '#d8c86a', '#3a7d2c'],
+      grav: 260, n: 7 });
+    if (c.prem) flut(c.x, c.y - 12, 'PREMIUM ✨', '#ffd94d');
+  });
+}
+
+function combos(dt) {
+  if (jog.turbo > 0) {
+    jog.turbo -= dt;
+    if (Math.random() < dt * 30) {
+      const [ex, ey] = localPt(-14, -10);
+      part(ex, ey, { vx: [-40, 10], vy: [-50, -10], vida: [.2, .45], tam: [3, 6],
+        cores: ['#ff7b2e', '#ffd94d', '#ff4d2e'], grav: -60, n: 2 });
+    }
+    if (jog.turbo <= 0) jog.turbo = 0;
+  } else if (G.fase === 'colheita') {
+    if (jog.comboT > 0) jog.comboT -= dt;
+    else jog.combo = Math.max(1, jog.combo - dt * 1.6);
+    if (jog.combo >= CFG.COMBO_MAX) {
+      jog.turbo = CFG.TURBO_DUR; jog.combo = 1; jog.comboT = 0;
+      toast('🔥 MODO TURBO! Velocidade 2x e diesel zero', 2.5);
+      SFX.turbo(); tremer(0.3);
+    }
+  }
+}
+
+function atualizarCapis(dt) {
+  const noite = G.hora >= 18.5 * 60;
+  for (const cp of capis) {
+    cp.cd = Math.max(0, cp.cd - dt); cp.frame += dt;
+    cp.dorme = noite;
+    if (!noite) {
+      cp.estT -= dt;
+      if (cp.estT <= 0) {
+        cp.anda = !cp.anda;
+        cp.estT = cp.anda ? rand(2, 4.5) : rand(1, 3);
+        if (cp.anda) cp.ang = rand(0, 6.28);
+      }
+      if (cp.anda) {
+        cp.x = clamp(cp.x + Math.cos(cp.ang) * 22 * dt, 60, MW - 60);
+        cp.y = clamp(cp.y + Math.sin(cp.ang) * 22 * dt, 60, MH - 60);
+        if (dentroUsina(cp.x, cp.y, 40)) cp.ang += Math.PI;
+      }
+    }
+    if (cp.cd <= 0 && jog.movendo && dist2(jog.x, jog.y, cp.x, cp.y) < 34 ** 2) {
+      cp.cd = 2;
+      dano(CFG.DANO_CAPIVARA);
+      G.grana = Math.max(0, G.grana - CFG.MULTA_CAPIVARA);
+      toast('🚨 MULTA AMBIENTAL −' + $(CFG.MULTA_CAPIVARA) + ' (capivara!)', 3);
+      SFX.multa(); SFX.capi(); tremer(0.35);
+      flut(jog.x, jog.y - 30, '−' + $(CFG.MULTA_CAPIVARA), '#ff6a5e');
+      let x, y, t = 0;                            // ela foge para bem longe
+      do { x = rand(120, MW - 120); y = rand(120, MH - 120); }
+      while (dist2(x, y, jog.x, jog.y) < 500 ** 2 && ++t < 50);
+      cp.x = x; cp.y = y; cp.anda = false; cp.estT = rand(1, 2);
+    }
+  }
+}
+
+/* fogo, raios e clima */
+function acender(c) { if (c.fogo) return; c.fogo = true; fogos.push({ c, t: 0, esp: false }); }
+function apagarFogo(f) {
+  f.c.fogo = false;
+  const k = fogos.indexOf(f); if (k >= 0) fogos.splice(k, 1);
+  part(f.c.x, f.c.y, { vx: [-20, 20], vy: [-40, -10], vida: [.4, .8], tam: [3, 5],
+    cores: ['#cfd6dc', '#aeb6bd'], grav: -30, n: 6 });
+}
+function caiRaio() {
+  if (!canas.length) return;
+  const alvo = escolha(canas);
+  G.flashRaio = 1; G.raioPos = { x: alvo.x, y: alvo.y };
+  SFX.raio(); tremer(0.3); acender(alvo);
+  toast('⚡ RAIO! FOGO NO CANAVIAL — bombeiro (4) custa ' + $(CFG.PRECO_BOMBEIRO), 3.5);
+}
+function atualizarFogos(dt) {
+  for (let i = fogos.length - 1; i >= 0; i--) {
+    const f = fogos[i]; f.t += dt;
+    if (!f.esp && f.t > CFG.FOGO_ESPALHA_T) {
+      f.esp = true;
+      gPerto(f.c.x, f.c.y, CFG.FOGO_RAIO, c2 => {
+        if (!c2.fogo && dist2(c2.x, c2.y, f.c.x, f.c.y) < CFG.FOGO_RAIO ** 2) acender(c2);
+      });
+    }
+    if (f.t > CFG.FOGO_QUEIMA_T) {                // virou cinza
+      const c = f.c;
+      gDel(c); const k = canas.indexOf(c); if (k >= 0) canas.splice(k, 1);
+      cinzas.push({ x: c.x, y: c.y });
+      fogos.splice(i, 1);
+      continue;
+    }
+    if (Math.random() < dt * 8)
+      part(f.c.x + rand(-6, 6), f.c.y + rand(-6, 6), { vx: [-15, 15], vy: [-70, -30],
+        vida: [.25, .5], tam: [2, 5], cores: ['#ff7b2e', '#ffd94d', '#ff4d2e'], grav: -40, n: 1 });
+  }
+  if (fogos.length && Math.random() < dt * 3) SFX.fogo();
+  for (const f of fogos)
+    if (dist2(jog.x, jog.y, f.c.x, f.c.y) < 30 ** 2) { dano(CFG.DANO_FOGO_S * dt); break; }
+}
+function clima(dt) {
+  const c = G.chuva;
+  const dentro = c.hoje && G.hora >= c.ini && G.hora <= c.fim;
+  if (dentro && !c.ativa) { c.ativa = true; toast('🌧️ CHUVA! Pista lenta e lama no talhão', 3); }
+  if (!dentro && c.ativa) { c.ativa = false; toast('🌤️ Estiou.', 2); }
+  chuvaSom(c.ativa && !mudo);
+  if (c.ativa) {
+    if (Math.random() < dt * 0.8 && lamas.length < CFG.LAMA_MAX) {
+      const x = rand(100, MW - 100), y = rand(100, MH - 100);
+      if (lugarLivre(x, y, 10)) lamas.push({ x, y, r: rand(34, 60) });
+    }
+    if (fogos.length && Math.random() < dt * 1.5) apagarFogo(fogos[fogos.length - 1]);
+  } else if (Math.random() < CFG.CHANCE_RAIO_S * dt) caiRaio();
+}
+
+/* ═══════════════════════════════════════════ ações (botões/teclas) ═ */
+function abastecer() {
+  const cap = uv('tanque');
+  if (jog.comb >= cap - 0.5) { toast('tanque já está cheio'); return; }
+  const gasto = Math.min((cap - jog.comb) * CFG.PRECO_LITRO, G.grana);
+  if (gasto < CFG.PRECO_LITRO) { toast('💸 Sem dinheiro para diesel'); SFX.multa(); return; }
+  const litros = gasto / CFG.PRECO_LITRO;
+  jog.comb = Math.min(cap, jog.comb + litros); G.grana -= gasto;
+  toast('⛽ +' + Math.round(litros) + 'L  (−' + $(gasto) + ')'); SFX.diesel();
+  flut(jog.x, jog.y - 30, '−' + $(gasto), '#ffb35e');
+  droneAnim('⛽');
+}
+function consertar() {
+  if (jog.integ >= 99.5) { toast('máquina está 100%'); return; }
+  const gasto = Math.min((100 - jog.integ) * CFG.PRECO_REPARO, G.grana);
+  if (gasto < CFG.PRECO_REPARO) { toast('💸 Sem dinheiro para conserto'); SFX.multa(); return; }
+  jog.integ = Math.min(100, jog.integ + gasto / CFG.PRECO_REPARO); G.grana -= gasto;
+  if (jog.integ > 0) jog.quebrada = false;
+  toast('🔧 Reparo feito  (−' + $(gasto) + ')'); SFX.reparo();
+  flut(jog.x, jog.y - 30, '−' + $(gasto), '#8ecae6');
+}
+function vender(taxa) {
+  if (jog.cargaUn <= 0) return;
+  const liquido = jog.cargaValor * G.tendencia[1] * (1 - taxa);
+  G.grana += liquido; G.vendidoHoje += liquido;
+  G.picoGrana = Math.max(G.picoGrana || 0, G.grana);
+  toast((taxa > 0 ? '📦 Drone vendeu por ' : '🏭 Usina pagou ') + $(liquido) +
+        (taxa > 0 ? ' (frete −20%)' : ' — sem taxas!'), 2.6);
+  flut(jog.x, jog.y - 34, '+' + $(liquido), '#ffe27a');
+  if (taxa > 0) SFX.moeda(); else SFX.vendona();
+  jog.cargaUn = 0; jog.cargaValor = 0;
+}
+function venderDrone() {
+  if (jog.cargaUn <= 0) { toast('caçamba vazia'); return; }
+  vender(CFG.TAXA_DRONE); droneAnim('📦');
+}
+function bombeiro() {
+  if (!fogos.length) { toast('nenhum foco de incêndio'); return; }
+  if (G.grana < CFG.PRECO_BOMBEIRO) { toast('💸 Bombeiro custa ' + $(CFG.PRECO_BOMBEIRO)); SFX.multa(); return; }
+  G.grana -= CFG.PRECO_BOMBEIRO;
+  droneAnim('🚒');
+  while (fogos.length) apagarFogo(fogos[0]);
+  toast('🚒 Drone bombeiro apagou tudo  (−' + $(CFG.PRECO_BOMBEIRO) + ')', 2.6);
+  SFX.bombeiro();
+}
+function plantioValido(x, y) {
+  if (x < 60 || y < 60 || x > MW - 60 || y > MH - 60) return false;
+  if (dentroUsina(x, y, 50)) return false;
+  const z = USINA.zona;
+  if (x > z.x - 30 && x < z.x + z.w + 30 && y > z.y - 30 && y < z.y + z.h + 30) return false;
+  for (const p of pedras) if (dist2(x, y, p.x, p.y) < (p.r + 18) ** 2) return false;
+  for (const pl of plantios) if (dist2(x, y, pl.x, pl.y) < 24 ** 2) return false;
+  return true;
+}
+function plantar() {
+  if (G.fase !== 'plantio') return;
+  const prem = G.mudaPremium, custo = prem ? CFG.MUDA_PREMIUM : CFG.MUDA_NORMAL;
+  const [sx, sy] = localPt(34, 0);
+  if (!plantioValido(sx, sy)) { toast('solo ocupado aqui'); SFX.multa(); return; }
+  if (G.grana < custo) { toast('💸 Muda ' + (prem ? 'premium ' : '') + 'custa ' + $(custo)); SFX.multa(); return; }
+  G.grana -= custo;
+  plantios.push({ x: sx, y: sy, prem });
+  G.plantadasHoje++;
+  SFX.plantar();
+  part(sx, sy, { vx: [-25, 25], vy: [-40, -8], vida: [.3, .5], tam: [2, 3],
+    cores: ['#7cc85a', '#5a3d28'], grav: 180, n: 5 });
+}
+function soqueiraCabe(x, y) {
+  if (dentroUsina(x, y, 50)) return false;
+  let ok = true;
+  gPerto(x, y, 18, c => { if (dist2(x, y, c.x, c.y) < 18 ** 2) ok = false; });
+  for (const p of pedras) if (dist2(x, y, p.x, p.y) < (p.r + 14) ** 2) ok = false;
+  return ok;
+}
+function irPlantio() {                            // oficina → plantio (mapa limpo)
+  canas.length = 0; gLimpar(); fogos.length = 0;
+  G.fase = 'plantio'; G.plantadasHoje = 0; G.mudaPremium = false;
+  toast('🌱 PLANTIO · cota ' + G.metaPlantio + ' mudas · ESPAÇO planta · Q troca o tipo', 4);
+}
+function encerrarPlantio() {
+  if (G.plantadasHoje < G.metaPlantio) {
+    toast('cota de plantio: faltam ' + (G.metaPlantio - G.plantadasHoje) + ' mudas'); SFX.multa(); return;
+  }
+  for (const pl of plantios) novaCana(pl.x, pl.y, pl.prem);
+  let re = 0;
+  for (const s of cortadas)
+    if (Math.random() < CFG.SOQUEIRA && soqueiraCabe(s.x, s.y)) { novaCana(s.x, s.y, false); re++; }
+  plantios.length = 0;
+  G.dia++;
+  sortearDia();
+  if (re) toast('🌱 A soqueira rebrotou ' + re + ' touceiras de graça!', 3);
+  G.fase = 'colheita';
+}
+
+/* partículas / toasts / flutuantes / drones cosméticos */
+function part(x, y, o) {
+  for (let i = 0; i < (o.n || 1); i++) {
+    if (parts.length > 420) parts.shift();
+    parts.push({ x, y, vx: rand(o.vx[0], o.vx[1]), vy: rand(o.vy[0], o.vy[1]),
+      vida: rand(o.vida[0], o.vida[1]), t: 0, tam: rand(o.tam[0], o.tam[1]),
+      cor: escolha(o.cores), grav: o.grav || 0 });
+  }
+}
+function atualizarParts(dt) {
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i]; p.t += dt;
+    if (p.t >= p.vida) { parts.splice(i, 1); continue; }
+    p.vy += p.grav * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+  }
+}
+function toast(txt, dur = 2.2) { toasts.push({ txt, dur, t: 0 }); if (toasts.length > 4) toasts.shift(); }
+function atualizarToasts(dt) {
+  for (let i = toasts.length - 1; i >= 0; i--) { toasts[i].t += dt; if (toasts[i].t > toasts[i].dur) toasts.splice(i, 1); }
+}
+function flut(x, y, txt, cor) { flutu.push({ x, y, txt, cor, t: 0 }); }
+function atualizarFlutu(dt) {
+  for (let i = flutu.length - 1; i >= 0; i--) { flutu[i].t += dt; if (flutu[i].t > 1.3) flutu.splice(i, 1); }
+}
+function droneAnim(icone) {
+  drones.push({ icone, x: jog.x + rand(-30, 30), y: jog.y - 300, ax: jog.x, ay: jog.y - 52, fase: 0, t: 0 });
+}
+function atualizarDrones(dt) {
+  for (let i = drones.length - 1; i >= 0; i--) {
+    const d = drones[i]; d.t += dt;
+    if (d.fase === 0) {
+      d.x += (d.ax - d.x) * dt * 4; d.y += (d.ay - d.y) * dt * 4;
+      if (Math.abs(d.y - d.ay) < 6) { d.fase = 1; d.t = 0; }
+    } else if (d.fase === 1) {
+      d.y = d.ay + Math.sin(d.t * 9) * 3;
+      if (d.t > 0.6) { d.fase = 2; d.t = 0; }
+    } else {
+      d.y -= 260 * dt; d.x += 120 * dt;
+      if (d.t > 1.4) drones.splice(i, 1);
+    }
+  }
+}
+</script>
+<script>
+'use strict';
+/* ═══════════════════════════════════════════════════════ render ════ */
+let LUZ = null, luzc = null;
+const botoesTela = [];                            // hit-test dos botões do HUD
+
+function comprarUpg(k) {
+  const u = CFG.UPG[k];
+  if (nivel[k] >= 3) return;
+  const p = u.precos[nivel[k]];
+  if (G.grana < p) { toast('💸 Falta grana para ' + u.nome); SFX.multa(); return; }
+  G.grana -= p; nivel[k]++;
+  SFX.moeda(); toast('🔩 ' + u.nome + ' nível ' + nivel[k] + '!');
+}
+
+function render() {
+  botoesTela.length = 0;
+  cam.x = clamp(jog.x - W / 2, 0, MW - W);
+  cam.y = clamp(jog.y - H / 2, 0, MH - H);
+
+  ctx.save();
+  if ((G.tremor || 0) > 0)
+    ctx.translate(rand(-1, 1) * G.tremor * 12, rand(-1, 1) * G.tremor * 12);
+  ctx.translate(-cam.x, -cam.y);
+
+  ctx.drawImage(CHAO, 0, 0);
+
+  for (const cz of cinzas) {                                        // cinzas
+    if (cz.x < cam.x - 20 || cz.x > cam.x + W + 20 || cz.y < cam.y - 20 || cz.y > cam.y + H + 20) continue;
+    ctx.fillStyle = 'rgba(34,30,26,.75)';
+    ctx.beginPath(); ctx.ellipse(cz.x, cz.y, 10, 6, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = 'rgba(70,62,54,.6)'; ctx.fillRect(cz.x - 3, cz.y - 2, 2, 2);
+  }
+  for (const l of lamas) {                                          // lama
+    if (l.x < cam.x - 70 || l.x > cam.x + W + 70 || l.y < cam.y - 70 || l.y > cam.y + H + 70) continue;
+    ctx.fillStyle = '#4a3823';
+    ctx.beginPath(); ctx.ellipse(l.x, l.y, l.r, l.r * 0.66, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#5d4629';
+    ctx.beginPath(); ctx.ellipse(l.x, l.y - 2, l.r * 0.86, l.r * 0.54, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = 'rgba(140,116,80,.35)';
+    ctx.beginPath(); ctx.ellipse(l.x - l.r * 0.25, l.y - l.r * 0.2, l.r * 0.3, l.r * 0.14, 0, 0, 7); ctx.fill();
+  }
+  for (const pl of plantios) {                                      // brotos
+    ctx.drawImage(SPR.broto, pl.x - 6, pl.y - 8);
+    if (pl.prem) {
+      ctx.strokeStyle = 'rgba(240,200,20,.8)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(pl.x, pl.y, 8, 0, 7); ctx.stroke();
+    }
+  }
+  gPerto(cam.x + W / 2, cam.y + H / 2, 580, c => {                  // canas (com cull)
+    const tr = c.fogo ? rand(-1.2, 1.2) : 0;
+    ctx.drawImage(c.prem ? SPR.canaPrem[c.vari] : SPR.cana[c.vari], c.x - 12 + tr, c.y - 12 + tr);
+  });
+  for (const p of pedras) {                                         // pedras
+    const s = SPR.pedra[p.vari];
+    ctx.drawImage(s, p.x - s.width / 2, p.y - s.height / 2);
+  }
+  for (const cp of capis) {                                         // capivaras
+    if (cp.x < cam.x - 40 || cp.x > cam.x + W + 40 || cp.y < cam.y - 40 || cp.y > cam.y + H + 40) continue;
+    ctx.save(); ctx.translate(cp.x, cp.y);
+    if (Math.cos(cp.ang) < 0) ctx.scale(-1, 1);
+    const spr = cp.dorme ? SPR.capiDorme : SPR.capi[cp.anda ? (cp.frame * 6 | 0) % 2 : 0];
+    ctx.drawImage(spr, -15, -9);
+    ctx.restore();
+    if (cp.dorme) {
+      ctx.fillStyle = 'rgba(230,240,255,.85)';
+      ctx.font = '700 11px "Courier New", monospace';
+      ctx.fillText('z', cp.x + 10, cp.y - 12 - Math.sin(G.t * 2) * 3);
+    }
+  }
+  for (const f of fogos) {                                          // chamas
+    const fx = f.c.x, fy = f.c.y;
+    for (let i = 0; i < 3; i++) {
+      const a = rand(0, 6.28), rr = rand(2, 7);
+      ctx.fillStyle = escolha(['#ff7b2e', '#ffd94d', '#ff4d2e']);
+      ctx.beginPath();
+      ctx.ellipse(fx + Math.cos(a) * 4, fy - rand(2, 12), rr * 0.6, rr, 0, 0, 7);
+      ctx.fill();
+    }
+  }
+
+  if (G.fase === 'plantio') {                                       // fantasma do plantio
+    const [gx, gy] = localPt(34, 0);
+    const ok = plantioValido(gx, gy);
+    ctx.strokeStyle = ok ? 'rgba(124,200,90,.9)' : 'rgba(255,90,70,.9)';
+    ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.arc(gx, gy, 12, 0, 7); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  { // colhedora
+    ctx.save();
+    ctx.translate(jog.x, jog.y); ctx.rotate(jog.ang);
+    const fr = jog.movendo ? (jog.frame | 0) % 2 : 0;
+    ctx.drawImage(SPR.colhedora[fr], -28, -18);
+    ctx.restore();
+    if (jog.quebrada && Math.floor(G.t * 3) % 2 === 0) {
+      ctx.fillStyle = '#ff5a4a'; ctx.font = '700 18px "Courier New", monospace';
+      ctx.fillText('!', jog.x - 3, jog.y - 26);
+    }
+  }
+
+  for (const d of drones) {                                         // drones de serviço
+    ctx.fillStyle = '#2f353c'; ctx.fillRect(d.x - 9, d.y - 3, 18, 6);
+    ctx.fillStyle = 'rgba(180,190,200,.8)';
+    const rot = Math.sin(G.t * 40) * 6;
+    ctx.fillRect(d.x - 14 - rot / 3, d.y - 6, 8, 2); ctx.fillRect(d.x + 6 + rot / 3, d.y - 6, 8, 2);
+    ctx.font = '12px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(d.icone, d.x, d.y + 16); ctx.textAlign = 'left';
+  }
+
+  for (const p of parts) {                                          // partículas
+    ctx.globalAlpha = clamp(1 - p.t / p.vida, 0, 1);
+    ctx.fillStyle = p.cor;
+    ctx.fillRect(p.x, p.y, p.tam, p.tam);
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.font = '700 13px "Courier New", monospace';                   // textos flutuantes
+  for (const f of flutu) {
+    ctx.globalAlpha = clamp(1 - f.t / 1.3, 0, 1);
+    ctx.fillStyle = f.cor;
+    ctx.fillText(f.txt, f.x - 14, f.y - f.t * 30);
+  }
+  ctx.globalAlpha = 1;
+
+  if (G.flashRaio > 0.5 && G.raioPos) {                             // o raio em si
+    ctx.strokeStyle = 'rgba(255,255,255,.95)'; ctx.lineWidth = 3;
+    ctx.beginPath();
+    let rx = G.raioPos.x, ry = cam.y - 10;
+    ctx.moveTo(rx + rand(-30, 30), ry);
+    while (ry < G.raioPos.y - 20) { ry += rand(30, 60); rx += rand(-26, 26); ctx.lineTo(rx, ry); }
+    ctx.lineTo(G.raioPos.x, G.raioPos.y);
+    ctx.stroke();
+  }
+  ctx.restore();                                                    // fim do mundo
+
+  if (G.flashRaio > 0) {                                            // clarão
+    ctx.fillStyle = 'rgba(255,255,255,' + (G.flashRaio * 0.4) + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+  if (G.chuva.ativa) {                                              // chuva na tela
+    ctx.fillStyle = 'rgba(40,60,110,.12)'; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(190,215,245,.4)'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i < 90; i++) {
+      const x = ((i * 137 + G.t * 520) % (W + 60)) - 30;
+      const y = (i * 89 + G.t * 900) % H;
+      ctx.moveTo(x, y); ctx.lineTo(x - 4, y + 12);
+    }
+    ctx.stroke();
+  }
+
+  const escuro = clamp((G.hora - 18 * 60) / 150, 0, 1) * 0.72;      // noite + faróis
+  if (G.fase === 'colheita' && escuro > 0.02 && LUZ) {
+    luzc.clearRect(0, 0, W, H);
+    luzc.fillStyle = 'rgba(8, 12, 40,' + escuro + ')';
+    luzc.fillRect(0, 0, W, H);
+    luzc.globalCompositeOperation = 'destination-out';
+    const px = jog.x - cam.x, py = jog.y - cam.y;
+    let g = luzc.createRadialGradient(px, py, 10, px, py, 120);      // luz ambiente
+    g.addColorStop(0, 'rgba(255,255,255,.9)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    luzc.fillStyle = g;
+    luzc.beginPath(); luzc.arc(px, py, 120, 0, 7); luzc.fill();
+    luzc.save();                                                     // cone do farol
+    luzc.translate(px, py); luzc.rotate(jog.ang);
+    g = luzc.createLinearGradient(0, 0, 250, 0);
+    g.addColorStop(0, 'rgba(255,255,255,.95)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    luzc.fillStyle = g;
+    luzc.beginPath();
+    luzc.moveTo(22, -10); luzc.lineTo(250, -78); luzc.lineTo(250, 78); luzc.lineTo(22, 10);
+    luzc.closePath(); luzc.fill();
+    luzc.restore();
+    const ux = USINA.x + USINA.w / 2 - cam.x, uy = USINA.y + USINA.h - cam.y; // luz da usina
+    g = luzc.createRadialGradient(ux, uy, 10, ux, uy, 150);
+    g.addColorStop(0, 'rgba(255,255,255,.6)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    luzc.fillStyle = g;
+    luzc.beginPath(); luzc.arc(ux, uy, 150, 0, 7); luzc.fill();
+    luzc.globalCompositeOperation = 'source-over';
+    ctx.drawImage(LUZ, 0, 0);
+  }
+
+  desenharHUD();
+  if (G.fase === 'menu') desenharMenu();
+  if (G.fase === 'oficina') desenharOficina();
+  if (G.fase === 'fim') desenharFim();
+  if (G.pausa) desenharPausa();
+  if (G.ajuda) desenharAjuda();
+
+  if (TOQUE && window.innerHeight > window.innerWidth) {            // aviso retrato
+    ctx.fillStyle = 'rgba(10,14,8,.92)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#f0c814'; ctx.textAlign = 'center';
+    ctx.font = '700 26px "Courier New", monospace';
+    ctx.fillText('📱↻  GIRE O CELULAR', W / 2, H / 2 - 8);
+    ctx.font = '15px "Courier New", monospace'; ctx.fillStyle = '#cfe0b8';
+    ctx.fillText('O canavial é melhor na horizontal', W / 2, H / 2 + 24);
+    ctx.textAlign = 'left';
+  }
+}
+
+/* ══════════════════════════════════════════════════════════ HUD ═══ */
+function barra(x, y, w, h, frac, cor, pisca) {
+  ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = pisca && Math.floor(G.t * 5) % 2 === 0 ? '#ffffff' : cor;
+  ctx.fillRect(x + 2, y + 2, Math.max(2, (w - 4) * clamp(frac, 0, 1)), h - 4);
+  ctx.strokeStyle = 'rgba(230,240,220,.35)'; ctx.lineWidth = 1;
+  ctx.strokeRect(x + .5, y + .5, w - 1, h - 1);
+}
+function chip(x, y, w, h, rot, sub, ativo, cb) {
+  ctx.fillStyle = ativo ? 'rgba(18,26,14,.88)' : 'rgba(18,24,16,.55)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = ativo ? '#f0c814' : '#46523c'; ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, w, h);
+  ctx.fillStyle = ativo ? '#eef2e0' : '#84907a';
+  ctx.font = '700 13px "Courier New", monospace'; ctx.textAlign = 'left';
+  ctx.fillText(rot, x + 8, y + 16);
+  if (sub) {
+    ctx.font = '11px "Courier New", monospace';
+    ctx.fillStyle = ativo ? '#c2ceac' : '#6d7a62';
+    ctx.fillText(sub, x + 8, y + 30);
+  }
+  if (ativo && cb) botoesTela.push({ x, y, w, h, cb });
+}
+
+function desenharHUD() {
+  if (G.fase === 'menu') return;
+
+  ctx.fillStyle = 'rgba(10,15,8,.78)'; ctx.fillRect(0, 0, W, 46);   // faixa superior
+  ctx.fillStyle = '#2c3a22'; ctx.fillRect(0, 44, W, 2);
+
+  ctx.font = '700 24px "Courier New", monospace';                   // grana
+  ctx.fillStyle = '#ffd94d';
+  ctx.fillText($(G.grana), 12, 31);
+
+  ctx.font = '700 15px "Courier New", monospace';
+  ctx.fillStyle = '#cfe0b8';
+  ctx.fillText('DIA ' + G.dia, 158, 29);
+
+  const tarde = G.hora >= 21 * 60;                                  // relógio
+  ctx.fillStyle = tarde && Math.floor(G.t * 4) % 2 === 0 ? '#ff5a4a' : '#eef2e0';
+  ctx.fillText(G.fase === 'plantio' ? '--:--' : hhmm(G.hora), 236, 29);
+
+  const td = G.tendencia;                                           // tendência
+  ctx.fillStyle = td[0] === 'ALTA' ? '#7cd85a' : td[0] === 'BAIXA' ? '#ff7a5e' : '#cfd6dc';
+  ctx.fillText(td[3] + ' ' + td[0], 322, 29);
+
+  if (G.fase === 'colheita') {                                      // meta do dia
+    ctx.font = '700 11px "Courier New", monospace';
+    ctx.fillStyle = '#9fb98a'; ctx.fillText('META', 436, 16);
+    barra(436, 20, 150, 14, G.vendidoHoje / G.meta, G.vendidoHoje >= G.meta ? '#7cd85a' : '#f0c814', false);
+    ctx.fillStyle = '#eef2e0'; ctx.font = '700 11px "Courier New", monospace';
+    ctx.fillText($(G.vendidoHoje) + ' / ' + $(G.meta), 440, 31);
+  } else {
+    ctx.font = '700 11px "Courier New", monospace';
+    ctx.fillStyle = '#9fb98a'; ctx.fillText('PLANTIO', 436, 16);
+    barra(436, 20, 150, 14, G.plantadasHoje / G.metaPlantio, '#7cd85a', false);
+    ctx.fillStyle = '#eef2e0';
+    ctx.fillText(G.plantadasHoje + ' / ' + G.metaPlantio + ' mudas', 440, 31);
+  }
+
+  ctx.font = '700 11px "Courier New", monospace';                   // diesel
+  ctx.fillStyle = '#9fb98a'; ctx.fillText('⛽ DIESEL', 606, 16);
+  const fCom = jog.comb / uv('tanque');
+  barra(606, 20, 110, 14, fCom, fCom > .5 ? '#59aa48' : fCom > .22 ? '#f0c814' : '#e04b3a', fCom <= .2);
+
+  ctx.fillStyle = '#9fb98a'; ctx.fillText('🔧 MOTOR', 730, 16);      // integridade
+  const fInt = jog.integ / 100;
+  barra(730, 20, 100, 14, fInt, fInt > .5 ? '#59aa48' : fInt > .25 ? '#f0c814' : '#e04b3a', fInt <= .25);
+
+  ctx.fillStyle = '#9fb98a'; ctx.fillText('📦 CARGA', 844, 16);      // carga
+  ctx.fillStyle = jog.cargaUn >= uv('cacamba') ? '#ff9a5e' : '#eef2e0';
+  ctx.font = '700 13px "Courier New", monospace';
+  ctx.fillText(jog.cargaUn + '/' + uv('cacamba'), 844, 31);
+  ctx.font = '11px "Courier New", monospace'; ctx.fillStyle = '#ffe27a';
+  ctx.fillText('~' + $(jog.cargaValor * G.tendencia[1]), 844, 42);
+
+  { // radar
+    const rx = W - 158, ry = 54, rw = 146, rh = 110;
+    ctx.fillStyle = 'rgba(8,14,8,.82)'; ctx.fillRect(rx, ry, rw, rh);
+    ctx.strokeStyle = '#3c4a30'; ctx.lineWidth = 2; ctx.strokeRect(rx, ry, rw, rh);
+    const sx = rw / MW, sy = rh / MH;
+    ctx.fillStyle = 'rgba(160,90,220,.9)';
+    ctx.fillRect(rx + USINA.x * sx, ry + USINA.y * sy, USINA.w * sx, USINA.h * sy);
+    ctx.fillStyle = 'rgba(240,200,20,.9)';
+    ctx.fillRect(rx + USINA.zona.x * sx, ry + USINA.zona.y * sy, Math.max(2, USINA.zona.w * sx), Math.max(2, USINA.zona.h * sy));
+    for (const c of canas) {
+      ctx.fillStyle = c.prem ? '#ffd94d' : '#5fc046';
+      ctx.fillRect(rx + c.x * sx, ry + c.y * sy, 2, 2);
+    }
+    for (const pl of plantios) { ctx.fillStyle = '#a4e08c'; ctx.fillRect(rx + pl.x * sx, ry + pl.y * sy, 2, 2); }
+    ctx.fillStyle = '#9aa0a8';
+    for (const p of pedras) ctx.fillRect(rx + p.x * sx - 1, ry + p.y * sy - 1, 3, 3);
+    ctx.fillStyle = '#b08050';
+    for (const cp of capis) ctx.fillRect(rx + cp.x * sx - 1, ry + cp.y * sy - 1, 3, 3);
+    if (Math.floor(G.t * 6) % 2 === 0) {
+      ctx.fillStyle = '#ff5030';
+      for (const f of fogos) ctx.fillRect(rx + f.c.x * sx - 1, ry + f.c.y * sy - 1, 3, 3);
+    }
+    const jx = rx + jog.x * sx, jy = ry + jog.y * sy;                // jogador
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(jx - 1.5, jy - 1.5, 4, 4);
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(jx, jy);
+    ctx.lineTo(jx + Math.cos(jog.ang) * 7, jy + Math.sin(jog.ang) * 7); ctx.stroke();
+  }
+
+  { // combo / turbo
+    const cx = 12, cy = H - 30;
+    ctx.font = '700 12px "Courier New", monospace';
+    if (jog.turbo > 0) {
+      ctx.fillStyle = Math.floor(G.t * 8) % 2 === 0 ? '#ff7b2e' : '#ffd94d';
+      ctx.fillText('🔥 TURBO ' + jog.turbo.toFixed(1) + 's', cx, cy - 4);
+      barra(cx, cy, 180, 12, jog.turbo / CFG.TURBO_DUR, '#ff7b2e', false);
+    } else if (G.fase === 'colheita') {
+      ctx.fillStyle = '#cfe0b8';
+      ctx.fillText('COMBO x' + jog.combo.toFixed(1), cx, cy - 4);
+      barra(cx, cy, 180, 12, (jog.combo - 1) / (CFG.COMBO_MAX - 1),
+            jog.combo > 3 ? '#ff9a3e' : '#7cd85a', jog.combo >= CFG.COMBO_MAX - 0.14);
+    }
+  }
+
+  let ty = 58;                                                      // toasts
+  ctx.textAlign = 'center';
+  for (const t of toasts) {
+    const a = clamp(1 - Math.max(0, t.t - (t.dur - 0.5)) / 0.5, 0, 1);
+    ctx.globalAlpha = a;
+    ctx.font = '700 13px "Courier New", monospace';
+    const tw = ctx.measureText(t.txt).width + 24;
+    ctx.fillStyle = 'rgba(12,18,10,.85)';
+    ctx.fillRect(W / 2 - tw / 2, ty - 14, tw, 21);
+    ctx.strokeStyle = 'rgba(240,200,20,.5)'; ctx.strokeRect(W / 2 - tw / 2, ty - 14, tw, 21);
+    ctx.fillStyle = '#eef2e0';
+    ctx.fillText(t.txt, W / 2, ty + 1);
+    ty += 26;
+  }
+  ctx.globalAlpha = 1; ctx.textAlign = 'left';
+
+  if (G.fase === 'colheita' || G.fase === 'plantio') {              // chips de ação
+    let by = H - 44;
+    const bx = W - 168, bw = 156, bh = 36;
+    if (G.fase === 'plantio') {
+      chip(bx, by, bw, bh, '✔ ENCERRAR  ⏎', G.plantadasHoje + '/' + G.metaPlantio + ' plantadas',
+           G.plantadasHoje >= G.metaPlantio, encerrarPlantio); by -= 42;
+      chip(bx, by, bw, bh, '🌱 PLANTAR  ␣', (G.mudaPremium ? 'premium ' + $(CFG.MUDA_PREMIUM) : 'normal ' + $(CFG.MUDA_NORMAL)),
+           true, plantar); by -= 42;
+      chip(bx, by, bw, bh, '⭐ TIPO  Q', G.mudaPremium ? '→ PREMIUM 3x' : '→ normal',
+           true, () => { G.mudaPremium = !G.mudaPremium; toast(G.mudaPremium ? '⭐ muda PREMIUM (vale 3x)' : '🌱 muda normal'); }); by -= 42;
+    }
+    if (fogos.length) {
+      chip(bx, by, bw, bh, '🚒 BOMBEIRO  4', $(CFG.PRECO_BOMBEIRO) + ' apaga tudo',
+           G.grana >= CFG.PRECO_BOMBEIRO, bombeiro); by -= 42;
+    }
+    chip(bx, by, bw, bh, '📦 VENDER  3', 'drone, frete −20%', jog.cargaUn > 0, venderDrone); by -= 42;
+    chip(bx, by, bw, bh, '🔧 CONSERTO  2', $((100 - jog.integ) * CFG.PRECO_REPARO), jog.integ < 99.5, consertar); by -= 42;
+    chip(bx, by, bw, bh, '⛽ DIESEL  1', $((uv('tanque') - jog.comb) * CFG.PRECO_LITRO), jog.comb < uv('tanque') - 0.5, abastecer);
+  }
+
+  { // som + pausa (cliáveis)
+    ctx.font = '15px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#cfe0b8';
+    ctx.fillText(mudo ? '🔇' : '🔊', W - 30, 30);
+    botoesTela.push({ x: W - 36, y: 8, w: 30, h: 30, cb: alternarMudo });
+    if (G.fase === 'colheita' || G.fase === 'plantio') {
+      ctx.fillText(G.pausa ? '▶' : '⏸', W - 60, 30);
+      botoesTela.push({ x: W - 66, y: 8, w: 28, h: 30, cb: () => { G.pausa = !G.pausa; } });
+    }
+  }
+
+  if (TOQUE && (G.fase === 'colheita' || G.fase === 'plantio')) {   // D-Pad virtual
+    ctx.font = '700 20px "Courier New", monospace'; ctx.textAlign = 'center';
+    for (const z of DPAD_ZONAS) {
+      const on = dpad[z.id];
+      ctx.fillStyle = on ? 'rgba(240,200,20,.5)' : 'rgba(20,28,16,.55)';
+      ctx.fillRect(z.x, z.y, z.w, z.h);
+      ctx.strokeStyle = on ? '#f0c814' : 'rgba(220,230,200,.5)'; ctx.lineWidth = 2;
+      ctx.strokeRect(z.x, z.y, z.w, z.h);
+      ctx.fillStyle = '#eef2e0';
+      ctx.fillText(z.rot, z.x + z.w / 2, z.y + z.h / 2 + 7);
+    }
+    ctx.textAlign = 'left';
+  }
+}
+
+/* ═══════════════════════════════════════════════ telas de fase ════ */
+function painel(wp, hp) {
+  const x = (W - wp) / 2, y = (H - hp) / 2;
+  ctx.fillStyle = 'rgba(10,16,8,.93)';
+  ctx.fillRect(x, y, wp, hp);
+  ctx.strokeStyle = '#f0c814'; ctx.lineWidth = 3;
+  ctx.strokeRect(x, y, wp, hp);
+  ctx.strokeStyle = '#3c4a30'; ctx.lineWidth = 1;
+  ctx.strokeRect(x + 5, y + 5, wp - 10, hp - 10);
+  return { x, y };
+}
+
+function desenharMenu() {
+  ctx.fillStyle = 'rgba(8,12,6,.55)'; ctx.fillRect(0, 0, W, H);
+  const { x, y } = painel(640, 380);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd94d';
+  ctx.font = '700 44px "Courier New", monospace';
+  ctx.fillText('🚜 CANA TYCOON', W / 2, y + 62);
+  ctx.fillStyle = '#9fbf8a'; ctx.font = '700 14px "Courier New", monospace';
+  ctx.fillText('S I M U L A D O R   D E   S A F R A', W / 2, y + 88);
+
+  ctx.save();                                                       // colhedora gigante
+  ctx.translate(W / 2, y + 150); ctx.scale(2.4, 2.4);
+  ctx.drawImage(SPR.colhedora[Math.floor(G.t * 6) % 2], -28, -18);
+  ctx.restore();
+
+  ctx.fillStyle = '#dfe8d2'; ctx.font = '13px "Courier New", monospace';
+  const li = [
+    'Colha, venda e cumpra a META até as 22:00 — ou o contrato acaba.',
+    'Usina paga 100% na DESCARGA · drone vende na hora com −20%.',
+    'Combo x4 vira TURBO · raios incendeiam · capivara dá multa!',
+    'Entre um dia e outro: OFICINA de upgrades e cota de PLANTIO.',
+  ];
+  li.forEach((l, i) => ctx.fillText(l, W / 2, y + 208 + i * 22));
+
+  ctx.fillStyle = '#9fbf8a'; ctx.font = '700 13px "Courier New", monospace';
+  ctx.fillText('🏆 Recordes: ' + G.recDias + ' dia(s) · pico ' + $(G.recGrana), W / 2, y + 310);
+
+  ctx.fillStyle = '#ffd94d';
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(G.t * 4);
+  ctx.font = '700 17px "Courier New", monospace';
+  ctx.fillText('ESPAÇO ou TOQUE para assumir a máquina', W / 2, y + 350);
+  ctx.globalAlpha = 1; ctx.textAlign = 'left';
+}
+
+function desenharOficina() {
+  ctx.fillStyle = 'rgba(8,12,6,.6)'; ctx.fillRect(0, 0, W, H);
+  const { x, y } = painel(700, 440);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd94d'; ctx.font = '700 26px "Courier New", monospace';
+  ctx.fillText('🔩 OFICINA — melhorias permanentes', W / 2, y + 42);
+  ctx.textAlign = 'left';
+
+  const chaves = ['motor', 'esteiras', 'cacamba', 'tanque'];
+  chaves.forEach((k, i) => {
+    const u = CFG.UPG[k], nv = nivel[k], ly = y + 80 + i * 72;
+    ctx.fillStyle = '#eef2e0'; ctx.font = '700 17px "Courier New", monospace';
+    ctx.fillText(u.nome, x + 34, ly + 18);
+    ctx.fillStyle = '#9fbf8a'; ctx.font = '12px "Courier New", monospace';
+    ctx.fillText(u.desc, x + 34, ly + 36);
+    ctx.font = '700 15px "Courier New", monospace'; ctx.fillStyle = '#ffd94d';
+    ctx.fillText('●'.repeat(nv) + '○'.repeat(3 - nv), x + 220, ly + 24);
+    ctx.fillStyle = '#cfe0b8'; ctx.font = '13px "Courier New", monospace';
+    const atual = u.val[nv] + u.un;
+    const prox = nv < 3 ? ' → ' + u.val[nv + 1] + u.un : '  (MÁX)';
+    ctx.fillText(atual + prox, x + 300, ly + 24);
+    if (nv < 3) {
+      const p = u.precos[nv];
+      chip(x + 520, ly, 146, 40, 'COMPRAR ' + $(p), null, G.grana >= p, () => comprarUpg(k));
+    }
+  });
+
+  ctx.fillStyle = '#ffd94d'; ctx.font = '700 20px "Courier New", monospace';
+  ctx.fillText('💰 ' + $(G.grana), x + 34, y + 404);
+  chip(x + 440, y + 376, 226, 44, 'IR PARA O PLANTIO → ⏎', 'cota: ' + G.metaPlantio + ' mudas', true, irPlantio);
+}
+
+function desenharPausa() {
+  ctx.fillStyle = 'rgba(8,12,6,.6)'; ctx.fillRect(0, 0, W, H);
+  const { y } = painel(360, 110);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd94d'; ctx.font = '700 26px "Courier New", monospace';
+  ctx.fillText('⏸ PAUSADO', W / 2, y + 46);
+  ctx.fillStyle = '#cfe0b8'; ctx.font = '13px "Courier New", monospace';
+  ctx.fillText('P para continuar · H para ajuda', W / 2, y + 78);
+  ctx.textAlign = 'left';
+}
+
+function desenharAjuda() {
+  ctx.fillStyle = 'rgba(8,12,6,.7)'; ctx.fillRect(0, 0, W, H);
+  const { x, y } = painel(620, 400);
+  ctx.fillStyle = '#ffd94d'; ctx.font = '700 22px "Courier New", monospace';
+  ctx.textAlign = 'center'; ctx.fillText('📖 MANUAL DO OPERADOR', W / 2, y + 40);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#dfe8d2'; ctx.font = '13px "Courier New", monospace';
+  const li = [
+    'WASD / setas ..... dirigir (esteiras giram no lugar)',
+    '1 ................ diesel via drone ($' + CFG.PRECO_LITRO + '/L)',
+    '2 ................ conserto do motor ($' + CFG.PRECO_REPARO + '/pt)',
+    '3 ................ vender carga via drone (frete −20%)',
+    '4 ................ drone bombeiro ($' + CFG.PRECO_BOMBEIRO + ', apaga tudo)',
+    'ESPAÇO ........... plantar muda (fase de plantio)',
+    'Q ................ alternar muda normal/premium',
+    'P / M / H ........ pausa · som · este manual',
+    '',
+    'Descarregue DENTRO da zona amarela da usina = 100% do valor.',
+    'Corte sem parar: combo x4 ativa o TURBO (2x veloz, diesel 0).',
+    'Chuva faz lama (esteiras melhores sofrem menos) e apaga fogo.',
+    'Capivaras dormem à noite — desviar delas é mais barato.',
+  ];
+  li.forEach((l, i) => ctx.fillText(l, x + 40, y + 76 + i * 23));
+  ctx.fillStyle = '#9fbf8a';
+  ctx.fillText('H para voltar', x + 40, y + 380);
+}
+
+function desenharFim() {
+  ctx.fillStyle = 'rgba(20,8,6,.72)'; ctx.fillRect(0, 0, W, H);
+  const { y } = painel(620, 300);
+  const motivos = {
+    meta: 'CONTRATO CANCELADO — meta do dia não atingida',
+    plantio: 'CONTRATO CANCELADO — cota de plantio não cumprida',
+    abandono: 'MÁQUINA ABANDONADA — sem diesel e sem dinheiro',
+    quebra: 'MÁQUINA QUEBRADA — sem dinheiro para o conserto',
+  };
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ff6a5e'; ctx.font = '700 30px "Courier New", monospace';
+  ctx.fillText('💥 FIM DE SAFRA', W / 2, y + 56);
+  ctx.fillStyle = '#eef2e0'; ctx.font = '700 14px "Courier New", monospace';
+  ctx.fillText(motivos[G.fimMotivo] || '', W / 2, y + 92);
+  ctx.font = '700 18px "Courier New", monospace'; ctx.fillStyle = '#cfe0b8';
+  ctx.fillText('Dias completos: ' + (G.diasFinal || 0) + '   ·   Pico de caixa: ' + $(G.picoGrana || 0), W / 2, y + 138);
+  if (G.novoRec) {
+    const p = 1 + Math.sin(G.t * 6) * 0.06;
+    ctx.save(); ctx.translate(W / 2, y + 182); ctx.scale(p, p);
+    ctx.fillStyle = '#ffd94d'; ctx.font = '700 22px "Courier New", monospace';
+    ctx.fillText('🏆 NOVO RECORDE!', 0, 0);
+    ctx.restore();
+  }
+  if (G.fimT > 0.6) {
+    ctx.globalAlpha = 0.6 + 0.4 * Math.sin(G.t * 4);
+    ctx.fillStyle = '#ffd94d'; ctx.font = '700 15px "Courier New", monospace';
+    ctx.fillText('ENTER, ESPAÇO ou TOQUE para nova safra', W / 2, y + 252);
+    ctx.globalAlpha = 1;
+  }
+  ctx.textAlign = 'left';
+}
+
+/* ═══════════════════════════════════════════════════════ input ════ */
+const kb = { fwd: false, re: false, esq: false, dir: false };
+const ptrs = new Map();
+const DPAD_ZONAS = [
+  { id: 'fwd', rot: '▲', x: 66,  y: H - 148, w: 52, h: 48 },
+  { id: 're',  rot: '▼', x: 66,  y: H - 46,  w: 52, h: 46 },
+  { id: 'esq', rot: '◀', x: 12,  y: H - 98,  w: 52, h: 50 },
+  { id: 'dir', rot: '▶', x: 120, y: H - 98,  w: 52, h: 50 },
+];
+function sincDpad() {
+  const t = { fwd: false, re: false, esq: false, dir: false };
+  for (const z of ptrs.values()) if (z) t[z] = true;
+  dpad.fwd = kb.fwd || t.fwd; dpad.re = kb.re || t.re;
+  dpad.esq = kb.esq || t.esq; dpad.dir = kb.dir || t.dir;
+}
+function zonaEm(x, y) {
+  for (const z of DPAD_ZONAS)
+    if (x >= z.x - 6 && x <= z.x + z.w + 6 && y >= z.y - 6 && y <= z.y + z.h + 6) return z.id;
+  return null;
+}
+function xyLogico(e) {
+  const r = canvas.getBoundingClientRect();
+  return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height];
+}
+
+window.addEventListener('keydown', e => {
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+  auInit();
+  if (e.repeat) return;
+  switch (e.code) {
+    case 'KeyW': case 'ArrowUp': kb.fwd = true; break;
+    case 'KeyS': case 'ArrowDown': kb.re = true; break;
+    case 'KeyA': case 'ArrowLeft': kb.esq = true; break;
+    case 'KeyD': case 'ArrowRight': kb.dir = true; break;
+    case 'Space':
+      if (G.fase === 'menu') iniciarJogo();
+      else if (G.fase === 'fim' && G.fimT > 0.6) iniciarJogo();
+      else if (G.fase === 'plantio') plantar();
+      break;
+    case 'Enter':
+      if (G.fase === 'fim' && G.fimT > 0.6) iniciarJogo();
+      else if (G.fase === 'oficina') irPlantio();
+      else if (G.fase === 'plantio') encerrarPlantio();
+      break;
+    case 'Digit1': if (G.fase === 'colheita' || G.fase === 'plantio') abastecer(); break;
+    case 'Digit2': if (G.fase === 'colheita' || G.fase === 'plantio') consertar(); break;
+    case 'Digit3': if (G.fase === 'colheita' || G.fase === 'plantio') venderDrone(); break;
+    case 'Digit4': if (G.fase === 'colheita') bombeiro(); break;
+    case 'KeyQ':
+      if (G.fase === 'plantio') {
+        G.mudaPremium = !G.mudaPremium;
+        toast(G.mudaPremium ? '⭐ muda PREMIUM (vale 3x)' : '🌱 muda normal');
+      }
+      break;
+    case 'KeyP':
+      if (G.fase === 'colheita' || G.fase === 'plantio') G.pausa = !G.pausa;
+      break;
+    case 'KeyM': alternarMudo(); break;
+    case 'KeyH': G.ajuda = !G.ajuda; break;
+  }
+  sincDpad();
+});
+window.addEventListener('keyup', e => {
+  switch (e.code) {
+    case 'KeyW': case 'ArrowUp': kb.fwd = false; break;
+    case 'KeyS': case 'ArrowDown': kb.re = false; break;
+    case 'KeyA': case 'ArrowLeft': kb.esq = false; break;
+    case 'KeyD': case 'ArrowRight': kb.dir = false; break;
+  }
+  sincDpad();
+});
+
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault(); auInit();
+  const [x, y] = xyLogico(e);
+  for (let i = botoesTela.length - 1; i >= 0; i--) {                // botões primeiro
+    const b = botoesTela[i];
+    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { b.cb(); return; }
+  }
+  if (TOQUE) {
+    const z = zonaEm(x, y);
+    if (z && (G.fase === 'colheita' || G.fase === 'plantio')) {
+      ptrs.set(e.pointerId, z); sincDpad(); return;
+    }
+  }
+  if (G.fase === 'menu') { iniciarJogo(); return; }
+  if (G.fase === 'fim' && G.fimT > 0.6) { iniciarJogo(); return; }
+  if (G.fase === 'plantio' && TOQUE) plantar();
+});
+canvas.addEventListener('pointermove', e => {
+  if (!ptrs.has(e.pointerId)) return;
+  const [x, y] = xyLogico(e);
+  ptrs.set(e.pointerId, zonaEm(x, y));
+  sincDpad();
+});
+function soltarPtr(e) { if (ptrs.delete(e.pointerId)) sincDpad(); }
+canvas.addEventListener('pointerup', soltarPtr);
+canvas.addEventListener('pointercancel', soltarPtr);
+window.addEventListener('blur', () => {
+  if (G.fase === 'colheita' || G.fase === 'plantio') G.pausa = true;
+  kb.fwd = kb.re = kb.esq = kb.dir = false; ptrs.clear(); sincDpad();
+});
+
+/* ════════════════════════════════════════════════ loop e boot ═════ */
+let tAnt = 0;
+function loop(ts) {
+  const dt = Math.min(0.05, (ts - tAnt) / 1000 || 0);
+  tAnt = ts;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+fazerSprites();
+fazerChao();
+[LUZ, luzc] = offscreen(W, H);
+requestAnimationFrame(loop);
+
+/* gancho de depuração/testes: __T no console (F12) */
+globalThis.__T = {
+  CFG, G, jog, nivel, canas, pedras, capis, fogos, lamas, plantios, cortadas, cinzas,
+  api: { iniciarJogo, vender, venderDrone, abastecer, consertar, bombeiro, plantar,
+         irPlantio, encerrarPlantio, caiRaio, acender, fim, sortearDia, novaCana,
+         comprarUpg, update, uv, localPt, render },
+  dpad,
+};
+</script>
+</body>
+</html>
