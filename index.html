@@ -43,6 +43,15 @@
     image-rendering:pixelated; image-rendering:crisp-edges;
     cursor:crosshair;
   }
+  #frame::before {
+    content:''; position:absolute; inset:0; border-radius:4px; pointer-events:none; z-index:2;
+    background:radial-gradient(120% 95% at 50% 45%, transparent 62%, rgba(4,8,3,.42) 100%);
+  }
+  #frame::after {
+    content:''; position:absolute; inset:0; border-radius:4px; pointer-events:none; z-index:3;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,.14) 0 1px, transparent 1px 3px);
+    mix-blend-mode:multiply;
+  }
   footer { font-size:11px; color:#8aa178; letter-spacing:.5px; text-align:center; user-select:none; }
   footer b { color:#cfe0b8; }
 </style>
@@ -103,6 +112,9 @@ const CFG = {
   FOGO_ESPALHA_T: 2.0, FOGO_QUEIMA_T: 3.6, FOGO_RAIO: 56,
   LAMA_MAX: 40,
   SOQUEIRA: 0.35,                    // fração das canas cortadas que rebrota grátis
+  DESGASTE_S: 0.055,                 // desgaste natural do motor rodando (pt/s)
+  PECAS_DIA: 6, PECA_INTEG: 10, PECA_GRANA: 20,
+  FRENESI_CHANCE: 0.55, FRENESI_MIN: 150, FRENESI_MULT: 2,
 
   /* upgrades da oficina: [nível 0..3] + preços dos níveis 1..3 */
   UPG: {
@@ -169,6 +181,9 @@ const G = {
   recGrana: Number(localStorage.getItem(CFG.CHAVE_REC_GRANA) || 0),
   t: 0,                    // tempo global (para animações)
   flashRaio: 0,
+  frenesi: { hoje: false, ini: 0, fim: 0, ativa: false },
+  contrato: null,
+  premHoje: 0, vendasUsinaHoje: 0, capisHoje: 0,
 };
 const nivel = { motor: 0, esteiras: 0, cacamba: 0, tanque: 0 };
 const uv = k => CFG.UPG[k].val[nivel[k]];       // valor atual de um upgrade
@@ -185,7 +200,8 @@ const jog = {                                    // a colhedora
 
 const canas = [], pedras = [], capis = [], fogos = [], lamas = [],
       cinzas = [], plantios = [], cortadas = [], parts = [], toasts = [],
-      drones = [], flutu = [];
+      drones = [], flutu = [], pecas = [], rastros = [], passaros = [],
+      sombrasNuvem = [];
 const cam = { x: 0, y: 0 };
 const dpad = { fwd: false, re: false, esq: false, dir: false };
 const TOQUE = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
@@ -275,6 +291,7 @@ const SFX = {
   plantar() { beep(340, 520, 0.08, 'sine', 0.2); },
   alarme()  { beep(880, 880, 0.09, 'square', 0.2); beep(880, 880, 0.09, 'square', 0.2, 0.14); },
   reparo()  { ruido(0.05, 0.2, 3200); beep(500, 500, 0.05, 'square', 0.1, 0.06); ruido(0.05, 0.2, 3200, 0.12); },
+  peca()    { beep(1040, 1040, 0.06, 'square', 0.14); beep(1560, 1560, 0.08, 'square', 0.12, 0.07); },
   diesel()  { beep(240, 180, 0.25, 'sine', 0.16); },
   bombeiro(){ ruido(0.5, 0.3, 600); beep(520, 760, 0.2, 'sine', 0.1); },
   capi()    { beep(700, 1000, 0.1, 'sine', 0.12); },
@@ -296,6 +313,13 @@ function alternarMudo() {
 const SPR = {};
 const USINA = { x: MW - 320, y: 54, w: 250, h: 168 };
 USINA.zona = { x: USINA.x + 34, y: USINA.y + USINA.h + 10, w: 136, h: 78 };
+const PLOTS = [[580, 480], [1380, 380], [520, 1080], [1500, 1120], [420, 1240], [1640, 1340]];
+const LAGOAS = [{ x: 300, y: 860, rx: 140, ry: 88 }, { x: 2080, y: 1620, rx: 112, ry: 72 }];
+const ARVORES = [
+  { x: 220, y: 300, v: 2 }, { x: 940, y: 210, v: 0 }, { x: 1660, y: 640, v: 1 },
+  { x: 340, y: 1560, v: 0 }, { x: 1120, y: 1500, v: 2 }, { x: 2160, y: 900, v: 1 },
+  { x: 760, y: 830, v: 1 }, { x: 1900, y: 170, v: 0 }, { x: 1250, y: 120, v: 2 },
+];
 
 function fazerSprites() {
   const S = 2;
@@ -308,6 +332,8 @@ function fazerSprites() {
   /* colhedora top-down, virada p/ a direita (2 quadros de esteira) */
   SPR.colhedora = [0, 1].map(fr => {
     const [c, cc] = offscreen(28 * S, 18 * S);
+    P(cc, 0.4, -0.5, 22.2, 5, '#10140b'); P(cc, 0.4, 13.5, 22.2, 5, '#10140b'); // contorno
+    P(cc, 2.4, 2.9, 18.2, 12.2, '#10140b'); P(cc, 19.4, 0.9, 4.2, 16.2, '#10140b');
     P(cc, 1, 0, 21, 4, '#23262b'); P(cc, 1, 14, 21, 4, '#23262b');       // esteiras
     for (let i = 0; i < 7; i++) {
       const lx = 2 + ((i * 3 + fr * 1.5) % 19);
@@ -334,17 +360,22 @@ function fazerSprites() {
 
   /* touceiras de cana vistas de cima (variações) */
   function canaSpr(prem, seed) {
-    const [c, cc] = offscreen(24, 24);
-    const cores = prem ? ['#e3b81e', '#c79b08', '#9a7800'] : ['#4f9b3a', '#3a7d2c', '#2a5e1e'];
-    for (let i = 0; i < 7; i++) {
-      const a = seed + i * (Math.PI * 2 / 7) + Math.sin(seed + i) * 0.25;
-      const L = 7 + ((seed * 13 + i * 7) % 4);
-      cc.strokeStyle = cores[i % 3]; cc.lineWidth = 2;
-      cc.beginPath(); cc.moveTo(12, 12);
-      cc.lineTo(12 + Math.cos(a) * L, 12 + Math.sin(a) * L); cc.stroke();
+    const [c, cc] = offscreen(26, 26);
+    const escuras = prem ? ['#8a6b00', '#9a7800'] : ['#245417', '#1e4712'];
+    const claras  = prem ? ['#e3b81e', '#ffd94d', '#c79b08'] : ['#4f9b3a', '#63b34a', '#3a7d2c'];
+    for (let p = 0; p < 2; p++) {                    // camada escura embaixo, clara em cima
+      const cores = p ? claras : escuras, n = p ? 8 : 7, base = p ? 8 : 10;
+      for (let i = 0; i < n; i++) {
+        const a = seed * (p + 1) + i * (Math.PI * 2 / n) + Math.sin(seed + i) * 0.3;
+        const L = base + ((seed * 13 + i * 7) % 4) - (p ? 0 : 1);
+        cc.strokeStyle = cores[i % cores.length]; cc.lineWidth = p ? 2 : 2.6;
+        cc.beginPath(); cc.moveTo(13, 13 + (p ? 0 : 1));
+        cc.lineTo(13 + Math.cos(a) * L, 13 + (p ? 0 : 1) + Math.sin(a) * L); cc.stroke();
+      }
     }
-    cc.fillStyle = prem ? '#fff3b0' : '#d8c86a'; cc.fillRect(10, 10, 4, 4);
-    if (prem) { cc.fillStyle = '#ffffff'; cc.fillRect(17, 5, 2, 2); }
+    cc.fillStyle = prem ? '#fff3b0' : '#d8c86a'; cc.fillRect(11, 11, 4, 4);
+    cc.fillStyle = prem ? '#c79b08' : '#8a7a3a'; cc.fillRect(12, 14, 2, 2);
+    if (prem) { cc.fillStyle = '#ffffff'; cc.fillRect(19, 5, 2, 2); }
     return c;
   }
   SPR.cana = [canaSpr(false, 1), canaSpr(false, 2.4), canaSpr(false, 4.1)];
@@ -371,6 +402,9 @@ function fazerSprites() {
   /* capivara: 2 quadros andando + dormindo */
   function capiSpr(fr) {
     const [c, cc] = offscreen(30, 18);
+    cc.fillStyle = '#241708';                                            // contorno
+    cc.beginPath(); cc.ellipse(15, 9, 13.2, 7.6, 0, 0, 7); cc.fill();
+    cc.beginPath(); cc.ellipse(25.4, 8, 6.2, 5.4, 0, 0, 7); cc.fill();
     if (fr < 2) {
       cc.fillStyle = '#4a3320';
       cc.fillRect(7 + fr * 2, 13, 3, 4); cc.fillRect(13 - fr * 2, 13, 3, 4);
@@ -387,6 +421,34 @@ function fazerSprites() {
   }
   SPR.capi = [capiSpr(0), capiSpr(1)];
   SPR.capiDorme = capiSpr(2);
+
+  SPR.arvore = [0, 1, 2].map(v => {                                      // copas de árvore
+    const r = 20 + v * 5;
+    const [c, cc] = offscreen(r * 2 + 6, r * 2 + 6);
+    const cx = r + 3, cy = r + 3;
+    cc.fillStyle = '#16300e'; cc.beginPath(); cc.arc(cx, cy, r, 0, 7); cc.fill();
+    cc.fillStyle = '#2c5220'; cc.beginPath(); cc.arc(cx - r * .14, cy - r * .14, r * .84, 0, 7); cc.fill();
+    cc.fillStyle = '#3d6b2a'; cc.beginPath(); cc.arc(cx - r * .26, cy - r * .26, r * .56, 0, 7); cc.fill();
+    for (let i = 0; i < 16; i++) {
+      const a = rand(0, 6.28), rr = rand(r * .2, r * .88);
+      cc.fillStyle = Math.random() < .5 ? '#4d7f36' : '#122a0b';
+      cc.fillRect(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr, 3, 3);
+    }
+    return c;
+  });
+
+  { const [c, cc] = offscreen(18, 18);                                   // caixa de peças ⚙
+    cc.fillStyle = '#caa02a';
+    for (let i = 0; i < 8; i++) {
+      const a = i * Math.PI / 4;
+      cc.fillRect(9 + Math.cos(a) * 7 - 2, 9 + Math.sin(a) * 7 - 2, 4, 4);
+    }
+    cc.beginPath(); cc.arc(9, 9, 6, 0, 7); cc.fill();
+    cc.fillStyle = '#8a6b10'; cc.beginPath(); cc.arc(9, 9, 4.4, 0, 7); cc.fill();
+    cc.fillStyle = '#caa02a'; cc.beginPath(); cc.arc(9, 9, 3, 0, 7); cc.fill();
+    cc.fillStyle = '#5b4408'; cc.beginPath(); cc.arc(9, 9, 1.6, 0, 7); cc.fill();
+    cc.fillStyle = '#ffe89a'; cc.fillRect(6, 5, 2, 2);
+    SPR.peca = c; }
 
   /* usina (prédio inteiro num sprite só) */
   { const [c, cc] = offscreen(USINA.w, USINA.h);
@@ -419,32 +481,88 @@ function fazerSprites() {
 let CHAO = null;
 function fazerChao() {
   const [c, cc] = offscreen(MW, MH);
-  cc.fillStyle = '#8a9a52'; cc.fillRect(0, 0, MW, MH);
-  for (let y = 0; y < MH; y += 12) {                                     // leiras de plantio
-    cc.fillStyle = (y / 12) % 2 ? '#83944c' : '#8fa057';
-    cc.fillRect(0, y, MW, 12);
-    cc.fillStyle = 'rgba(70,84,38,.35)'; cc.fillRect(0, y + 10, MW, 2);
+  cc.fillStyle = '#7d9450'; cc.fillRect(0, 0, MW, MH);              // pasto-base
+  for (let i = 0; i < 5200; i++) {                                  // mosqueado fino
+    cc.fillStyle = escolha(['rgba(96,116,56,.5)', 'rgba(140,160,92,.5)', 'rgba(70,88,40,.4)']);
+    cc.fillRect(rand(0, MW) | 0, rand(0, MH) | 0, randi(2, 3), 2);
   }
-  for (let i = 0; i < 2600; i++) {                                       // textura
-    cc.fillStyle = Math.random() < 0.5 ? 'rgba(60,74,30,.4)' : 'rgba(180,196,120,.35)';
-    cc.fillRect(rand(0, MW) | 0, rand(0, MH) | 0, 2, 2);
+  for (let i = 0; i < 26; i++) {                                    // variação orgânica larga
+    cc.fillStyle = 'rgba(60,78,34,.07)';
+    cc.beginPath(); cc.ellipse(rand(0, MW), rand(0, MH), rand(120, 320), rand(80, 200), rand(0, 3), 0, 7);
+    cc.fill();
+  }
+  for (const [px, py] of PLOTS) {                                   // talhões de solo arado
+    const w = 332, h = 224, x0 = px - 16, y0 = py - 18;
+    cc.fillStyle = '#4d422a'; cc.fillRect(x0 - 3, y0 - 3, w + 6, h + 6);
+    cc.fillStyle = '#6f5f38'; cc.fillRect(x0, y0, w, h);
+    for (let cx2 = x0 + 6; cx2 < x0 + w; cx2 += 26) {               // sulcos casando com as fileiras
+      cc.fillStyle = '#5c4e2e'; cc.fillRect(cx2, y0 + 3, 12, h - 6);
+      cc.fillStyle = '#7d6c42'; cc.fillRect(cx2 + 12, y0 + 3, 3, h - 6);
+    }
+    for (let i = 0; i < 130; i++) {
+      cc.fillStyle = escolha(['rgba(212,196,120,.55)', 'rgba(70,58,34,.6)']);
+      cc.fillRect(x0 + rand(4, w - 6), y0 + rand(4, h - 6), 2, 2);
+    }
+  }
+  for (let i = 0; i < 180; i++) {                                   // flores silvestres
+    const x = rand(40, MW - 40), y = rand(40, MH - 40);
+    cc.fillStyle = escolha(['#e88bb0', '#f2f2f2', '#ffd94d', '#c98be8']);
+    cc.fillRect(x - 1, y - 3, 2, 2); cc.fillRect(x - 1, y + 1, 2, 2);
+    cc.fillRect(x - 3, y - 1, 2, 2); cc.fillRect(x + 1, y - 1, 2, 2);
+    cc.fillStyle = '#f7f0c0'; cc.fillRect(x - 1, y - 1, 2, 2);
+  }
+  for (let i = 0; i < 300; i++) {                                   // tufos de capim
+    const x = rand(30, MW - 30), y = rand(30, MH - 30);
+    cc.strokeStyle = escolha(['#5f7d3a', '#6c8c44']); cc.lineWidth = 1.5;
+    cc.beginPath(); cc.moveTo(x, y); cc.lineTo(x + rand(-3, 3), y - rand(4, 8)); cc.stroke();
+  }
+  for (let i = 0; i < 110; i++) {                                   // pedrisco
+    cc.fillStyle = 'rgba(122,126,132,.55)';
+    cc.fillRect(rand(0, MW) | 0, rand(0, MH) | 0, 3, 2);
   }
   const alvoX = USINA.zona.x + USINA.zona.w / 2, alvoY = USINA.zona.y + 40; // estrada
-  const passos = 90;
+  const passos = 96;
   for (let i = 0; i <= passos; i++) {
     const t = i / passos;
     const x = lerp(MW / 2, alvoX, t) + Math.sin(t * 5.5) * 60;
     const y = lerp(MH / 2 + 140, alvoY, t);
-    cc.fillStyle = '#6b5433'; cc.beginPath(); cc.arc(x, y, 27, 0, 7); cc.fill();
-    cc.fillStyle = '#8a6b43'; cc.beginPath(); cc.arc(x, y, 22, 0, 7); cc.fill();
+    cc.fillStyle = '#5c4a2c'; cc.beginPath(); cc.arc(x, y, 28, 0, 7); cc.fill();
+    cc.fillStyle = '#8a6b43'; cc.beginPath(); cc.arc(x, y, 23, 0, 7); cc.fill();
+    cc.fillStyle = '#79603c'; cc.beginPath(); cc.arc(x, y - 1, 15, 0, 7); cc.fill();
+    if (i % 3 === 0) {                                               // trilhos de pneu
+      cc.fillStyle = 'rgba(70,56,32,.8)';
+      cc.fillRect(x - 12, y - 2, 5, 4); cc.fillRect(x + 7, y - 2, 5, 4);
+    }
   }
-  cc.fillStyle = 'rgba(40,50,24,.9)';                                    // cerca
+  for (const L of LAGOAS) {                                          // lagoas
+    cc.fillStyle = '#c7b083';
+    cc.beginPath(); cc.ellipse(L.x, L.y, L.rx + 12, L.ry + 9, 0, 0, 7); cc.fill();
+    cc.fillStyle = '#27515f';
+    cc.beginPath(); cc.ellipse(L.x, L.y, L.rx, L.ry, 0, 0, 7); cc.fill();
+    cc.fillStyle = '#356b7c';
+    cc.beginPath(); cc.ellipse(L.x, L.y - 4, L.rx * .86, L.ry * .8, 0, 0, 7); cc.fill();
+    cc.fillStyle = '#4b8b9c';
+    cc.beginPath(); cc.ellipse(L.x - L.rx * .2, L.y - L.ry * .25, L.rx * .5, L.ry * .4, 0, 0, 7); cc.fill();
+    cc.strokeStyle = '#2c5220'; cc.lineWidth = 2;                    // juncos na margem
+    for (let i = 0; i < 12; i++) {
+      const a = rand(0, 6.28);
+      const bx = L.x + Math.cos(a) * (L.rx + 6), by = L.y + Math.sin(a) * (L.ry + 5);
+      cc.beginPath(); cc.moveTo(bx, by); cc.lineTo(bx + rand(-2, 2), by - rand(6, 11)); cc.stroke();
+    }
+  }
+  cc.fillStyle = 'rgba(40,50,24,.9)';                                // cerca
   for (let x = 10; x < MW; x += 64) { cc.fillRect(x, 6, 5, 14); cc.fillRect(x, MH - 20, 5, 14); }
   for (let y = 10; y < MH; y += 64) { cc.fillRect(6, y, 14, 5); cc.fillRect(MW - 20, y, 14, 5); }
   cc.strokeStyle = 'rgba(40,50,24,.55)'; cc.lineWidth = 2;
   cc.strokeRect(11, 11, MW - 22, MH - 22);
-  cc.drawImage(SPR.usina, USINA.x, USINA.y);                             // usina no chão
-  cc.fillStyle = 'rgba(240,200,20,.85)';                                 // zona de descarga
+  for (const a of ARVORES) {                                         // sombra e tronco (copa é em runtime)
+    cc.fillStyle = 'rgba(16,24,10,.30)';
+    cc.beginPath(); cc.ellipse(a.x + 9, a.y + 11, 26 + a.v * 5, 15 + a.v * 3, 0, 0, 7); cc.fill();
+    cc.fillStyle = '#5a3d22'; cc.beginPath(); cc.arc(a.x, a.y, 7, 0, 7); cc.fill();
+    cc.fillStyle = '#6f4c2b'; cc.beginPath(); cc.arc(a.x - 1, a.y - 1, 4, 0, 7); cc.fill();
+  }
+  cc.drawImage(SPR.usina, USINA.x, USINA.y);                         // usina no chão
+  cc.fillStyle = 'rgba(240,200,20,.85)';                             // zona de descarga
   const z = USINA.zona;
   for (let i = 0; i < z.w; i += 16) cc.fillRect(z.x + i, z.y, 8, 4);
   for (let i = 0; i < z.w; i += 16) cc.fillRect(z.x + i + 4, z.y + z.h - 4, 8, 4);
@@ -488,6 +606,11 @@ function lugarLivre(x, y, folga) {
   const z = USINA.zona;
   if (x > z.x - 40 && x < z.x + z.w + 40 && y > z.y - 40 && y < z.y + z.h + 40) return false;
   if (dist2(x, y, MW / 2, MH / 2 + 120) < 160 ** 2) return false;      // spawn
+  for (const L of LAGOAS) {
+    const dx = (x - L.x) / (L.rx + 30), dy = (y - L.y) / (L.ry + 30);
+    if (dx * dx + dy * dy < 1) return false;
+  }
+  for (const a of ARVORES) if (dist2(x, y, a.x, a.y) < (folga + 14) ** 2) return false;
   for (const p of pedras) if (dist2(x, y, p.x, p.y) < (folga + p.r) ** 2) return false;
   return true;
 }
@@ -502,16 +625,23 @@ function gerarMundo() {
   for (let i = 0; i < CFG.N_CAPIVARAS; i++) capis.push(novaCapi());
 }
 function novaCapi() {
-  let x, y, t = 0;
-  do { x = rand(120, MW - 120); y = rand(120, MH - 120); }
-  while ((!lugarLivre(x, y, 40) || dist2(x, y, jog.x, jog.y) < 300 ** 2) && ++t < 80);
+  let x = MW / 2, y = MH / 2, t = 0;
+  if (LAGOAS.length && Math.random() < 0.65) {           // 65% delas ficam pela lagoa
+    const L = escolha(LAGOAS);
+    do {
+      const a = rand(0, 6.28), d = rand(1.25, 2.1);
+      x = clamp(L.x + Math.cos(a) * L.rx * d, 80, MW - 80);
+      y = clamp(L.y + Math.sin(a) * L.ry * d, 80, MH - 80);
+    } while (dist2(x, y, jog.x, jog.y) < 300 ** 2 && ++t < 40);
+  } else {
+    do { x = rand(120, MW - 120); y = rand(120, MH - 120); }
+    while ((!lugarLivre(x, y, 40) || dist2(x, y, jog.x, jog.y) < 300 ** 2) && ++t < 80);
+  }
   return { x, y, ang: rand(0, 6.28), anda: false, dorme: false, estT: rand(1, 3), frame: rand(0, 9), cd: 0 };
 }
 
 function plantarCampoInicial() {                  // a safra do dia 1 já está no chão
-  const plots = [[MW/2 - 620, MH/2 - 420], [MW/2 + 180, MH/2 - 520], [MW/2 - 680, MH/2 + 180],
-                 [MW/2 + 300, MH/2 + 220], [420, MH - 560], [MW - 760, MH - 460]];
-  for (const [px, py] of plots) {
+  for (const [px, py] of PLOTS) {
     const cols = randi(9, 12), lins = randi(5, 7);
     for (let l = 0; l < lins; l++)
       for (let q = 0; q < cols; q++) {
@@ -537,9 +667,53 @@ function sortearDia() {
   G.chuva.ativa = false;
   fogos.length = 0; lamas.length = 0; cinzas.length = 0; cortadas.length = 0;
   for (const cp of capis) cp.dorme = false;
+  G.premHoje = 0; G.vendasUsinaHoje = 0; G.capisHoje = 0;
+  G.frenesi = { hoje: Math.random() < CFG.FRENESI_CHANCE, ini: 0, fim: 0, ativa: false };
+  if (G.frenesi.hoje) {
+    G.frenesi.ini = rand(9 * 60, 19 * 60);
+    G.frenesi.fim = G.frenesi.ini + CFG.FRENESI_MIN;
+  }
+  sortearContrato();
+  pecas.length = 0;
+  for (let i = 0; i < CFG.PECAS_DIA; i++) {
+    let x, y, t = 0;
+    do { x = rand(120, MW - 120); y = rand(120, MH - 120); } while (!lugarLivre(x, y, 26) && ++t < 60);
+    pecas.push({ x, y, rot: rand(0, 6) });
+  }
+  passaros.length = 0;
+  for (let i = 0; i < 5; i++) {
+    let x, y, t = 0;
+    do { x = rand(150, MW - 150); y = rand(150, MH - 150); } while (!lugarLivre(x, y, 30) && ++t < 50);
+    passaros.push({ x, y, estado: 'pousado', n: randi(3, 5), t: rand(0, 9), vx: 0, vy: 0 });
+  }
   toast('☀️ DIA ' + G.dia + ' · mercado ' + G.tendencia[3] + G.tendencia[0] +
         ' · meta ' + $(G.meta) + ' até 22:00', 4);
   SFX.dia();
+}
+
+function sortearContrato() {
+  const d = G.dia, tipo = escolha(['premium', 'usina', 'pacifista']);
+  if (tipo === 'premium')
+    G.contrato = { id: 'premium', desc: 'corte ' + (3 + d) + ' canas premium', alvo: 3 + d,
+                   prog: 0, bonus: 100 + d * 30, feito: false, falhou: false };
+  else if (tipo === 'usina')
+    G.contrato = { id: 'usina', desc: 'faça 2 descargas na usina', alvo: 2,
+                   prog: 0, bonus: 90 + d * 25, feito: false, falhou: false };
+  else
+    G.contrato = { id: 'pacifista', desc: 'não atropele capivaras', alvo: 0,
+                   prog: 0, bonus: 80 + d * 20, feito: false, falhou: false };
+}
+function progContrato(id, n = 1) {
+  const c = G.contrato;
+  if (!c || c.feito || c.falhou || c.id !== id) return;
+  c.prog += n;
+  if (c.prog >= c.alvo) {
+    c.feito = true;
+    G.grana += c.bonus; G.vendidoHoje += c.bonus;
+    G.picoGrana = Math.max(G.picoGrana || 0, G.grana);
+    toast('📜 CONTRATO CUMPRIDO! +' + $(c.bonus), 3); SFX.recorde();
+    flut(jog.x, jog.y - 44, '+' + $(c.bonus), '#ffd94d');
+  }
 }
 
 function iniciarJogo() {
@@ -552,6 +726,8 @@ function iniciarJogo() {
   jog.quebrada = false; jog.seco = false; jog.cdDano = 0;
   canas.length = 0; gLimpar();
   plantios.length = 0; parts.length = 0; toasts.length = 0; drones.length = 0; flutu.length = 0;
+  pecas.length = 0; rastros.length = 0; passaros.length = 0;
+  G._gAnt = G.grana; G._gPulso = 0;
   gerarMundo(); plantarCampoInicial(); sortearDia();
   G.fase = 'colheita'; G.pausa = false; G.ajuda = false;
 }
@@ -585,6 +761,16 @@ function update(dt) {
   G.flashRaio = Math.max(0, G.flashRaio - dt * 2.2);
   G.tremor = Math.max(0, (G.tremor || 0) - dt);
   atualizarParts(dt); atualizarToasts(dt); atualizarFlutu(dt); atualizarDrones(dt);
+  if (G.grana !== G._gAnt) { G._gPulso = 0.32; G._gAnt = G.grana; }
+  G._gPulso = Math.max(0, (G._gPulso || 0) - dt);
+  for (const n of sombrasNuvem) {
+    n.x += n.vx * dt;
+    if (n.x - n.rx > MW) { n.x = -n.rx; n.y = rand(0, MH); }
+  }
+  for (let i = rastros.length - 1; i >= 0; i--) {
+    rastros[i].t += dt;
+    if (rastros[i].t > 7) rastros.splice(i, 1);
+  }
 
   if (G.fase === 'fim') { G.fimT += dt; motorSom(0, false); chuvaSom(false); return; }
   if (G.fase === 'menu' || G.fase === 'oficina') { motorSom(0, false); chuvaSom(false); return; }
@@ -599,12 +785,14 @@ function update(dt) {
     cortar();
     atualizarCapis(dt);
     atualizarFogos(dt);
+    atualizarPassaros(dt);
     clima(dt);
     if (Math.random() < dt * 2)                   // fumaça da chaminé
       part(USINA.x + 29, USINA.y + 2, { vx: [-6, 8], vy: [-26, -12], vida: [1.2, 2.2],
         tam: [3, 6], cores: ['rgba(205,210,215,.5)', 'rgba(160,166,172,.45)'], grav: -6, n: 1 });
   } else {
     chuvaSom(false);
+    atualizarPassaros(dt);
     const possivel = G.grana + jog.cargaValor * G.tendencia[1] * (1 - CFG.TAXA_DRONE);
     if (G.plantadasHoje < G.metaPlantio && possivel < CFG.MUDA_NORMAL) fim('plantio');
   }
@@ -614,12 +802,29 @@ function update(dt) {
 
 function relogio(dt) {
   G.hora += dt * CFG.MIN_POR_SEG;
+  const fz = G.frenesi;
+  if (fz.hoje) {
+    const dentro = G.hora >= fz.ini && G.hora <= fz.fim;
+    if (dentro && !fz.ativa) {
+      fz.ativa = true;
+      toast('⚡ FRENESI DE MERCADO! Toda venda vale x' + CFG.FRENESI_MULT + ' por um tempo', 3.2);
+      SFX.recorde();
+    }
+    if (!dentro && fz.ativa) { fz.ativa = false; toast('⚡ O frenesi passou.', 2); }
+  }
   if (!G.avisou21 && G.hora >= 21 * 60) {
     G.avisou21 = true;
     toast('⏰ 21:00 — última hora! Venda a carga!', 3); SFX.alarme();
   }
   if (!G.fechou && G.hora >= CFG.HORA_FIM) {
     G.fechou = true; jog.vel = 0;
+    const ct = G.contrato;
+    if (ct && ct.id === 'pacifista' && !ct.feito && !ct.falhou && G.capisHoje === 0) {
+      ct.feito = true;
+      G.grana += ct.bonus; G.vendidoHoje += ct.bonus;
+      G.picoGrana = Math.max(G.picoGrana || 0, G.grana);
+      toast('📜 CONTRATO CUMPRIDO (nenhuma capivara ferida)! +' + $(ct.bonus), 3);
+    }
     if (G.vendidoHoje >= G.meta) {
       G.fase = 'oficina';
       toast('✅ META BATIDA! Lucros liberados na oficina', 3); SFX.recorde();
@@ -654,6 +859,13 @@ function moverJogador(dt, colhendo) {
   jog.x = clamp(jog.x + Math.cos(jog.ang) * jog.vel * dt, 34, MW - 34);
   jog.y = clamp(jog.y + Math.sin(jog.ang) * jog.vel * dt, 34, MH - 34);
 
+  G._tRastro = (G._tRastro || 0) - dt;                              // marcas no chão
+  if (jog.movendo && G._tRastro <= 0) {
+    G._tRastro = 0.05;
+    if (rastros.length > 240) rastros.shift();
+    rastros.push({ x: jog.x - Math.cos(jog.ang) * 6, y: jog.y - Math.sin(jog.ang) * 6, ang: jog.ang, t: 0 });
+  }
+
   if (dentroUsina(jog.x, jog.y, 26)) {            // prédio é sólido
     const l = jog.x - (USINA.x - 26), r = (USINA.x + USINA.w + 26) - jog.x;
     const t = jog.y - (USINA.y - 26), b = (USINA.y + USINA.h + 26) - jog.y;
@@ -682,6 +894,49 @@ function moverJogador(dt, colhendo) {
     }
   }
 
+  for (const a of ARVORES) {                      // troncos são sólidos
+    const rr = 29, d2 = dist2(jog.x, jog.y, a.x, a.y);
+    if (d2 < rr * rr) {
+      const d = Math.sqrt(d2) || 1;
+      jog.x = a.x + (jog.x - a.x) / d * rr;
+      jog.y = a.y + (jog.y - a.y) / d * rr;
+      if (Math.abs(jog.vel) > 60 && jog.cdDano <= 0) {
+        jog.cdDano = 0.5; dano(5); jog.vel *= -0.2;
+        SFX.colisao(); tremer(0.2);
+        part(jog.x, jog.y, { vx: [-60, 60], vy: [-100, -20], vida: [.4, .8], tam: [2, 4],
+          cores: ['#4d7f36', '#2c5220', '#8a5a30'], grav: 260, n: 8 });
+      } else jog.vel *= 0.5;
+    }
+  }
+  for (const L of LAGOAS) {                       // água barra a máquina
+    const dx = (jog.x - L.x) / (L.rx + 20), dy = (jog.y - L.y) / (L.ry + 20);
+    const k = dx * dx + dy * dy;
+    if (k < 1) {
+      const d = Math.sqrt(k) || 0.001;
+      jog.x = L.x + (dx / d) * (L.rx + 20);
+      jog.y = L.y + (dy / d) * (L.ry + 20);
+      jog.vel *= 0.35;
+      if (Math.random() < 0.4)
+        part(jog.x, jog.y, { vx: [-40, 40], vy: [-70, -20], vida: [.3, .5], tam: [2, 3],
+          cores: ['#7fc4d4', '#4b8b9c'], grav: 240, n: 3 });
+    }
+  }
+
+  for (let i = pecas.length - 1; i >= 0; i--) {   // caixas de peças ⚙
+    const pc = pecas[i];
+    if (dist2(jog.x, jog.y, pc.x, pc.y) < 30 ** 2) {
+      pecas.splice(i, 1);
+      jog.integ = Math.min(100, jog.integ + CFG.PECA_INTEG);
+      if (jog.integ > 0) jog.quebrada = false;
+      G.grana += CFG.PECA_GRANA;
+      G.picoGrana = Math.max(G.picoGrana || 0, G.grana);
+      toast('⚙ Peças na pista! +' + CFG.PECA_INTEG + ' motor · +' + $(CFG.PECA_GRANA));
+      SFX.peca(); flut(pc.x, pc.y - 10, '+⚙', '#ffd94d');
+      part(pc.x, pc.y, { vx: [-60, 60], vy: [-90, -20], vida: [.3, .6], tam: [2, 3],
+        cores: ['#ffd94d', '#caa02a', '#ffffff'], grav: 280, n: 8 });
+    }
+  }
+
   if (jog.cargaUn > 0) {                          // descarga na usina = 100%
     const z = USINA.zona;
     if (jog.x > z.x && jog.x < z.x + z.w && jog.y > z.y && jog.y < z.y + z.h) vender(0);
@@ -693,6 +948,7 @@ function moverJogador(dt, colhendo) {
   if (G.chuva.ativa) cons *= 1.25;
   if (colhendo && G.hora > 19 * 60) cons *= 1.10;                   // orvalho noturno
   jog.comb = Math.max(0, jog.comb - cons * dt);
+  if (jog.movendo) dano(CFG.DESGASTE_S * dt);     // desgaste natural do motor
   const secoAgora = jog.comb <= 0;
   if (secoAgora && !jog.seco) { toast('⛽ SEM DIESEL! Peça reabastecimento (1)', 3); SFX.alarme(); }
   jog.seco = secoAgora;
@@ -736,7 +992,9 @@ function cortar() {
     if (c.fogo) { const f = fogos.find(f => f.c === c); if (f) fogos.splice(fogos.indexOf(f), 1); }
     cortadas.push({ x: c.x, y: c.y });
     jog.cargaUn++;
-    jog.cargaValor += CFG.CANA_VALOR * (c.prem ? CFG.PREMIUM_MULT : 1) * jog.combo;
+    jog.cargaValor += CFG.CANA_VALOR * (c.prem ? CFG.PREMIUM_MULT : 1) * jog.combo *
+                      (jog.turbo > 0 ? 1.5 : 1);
+    if (c.prem) { G.premHoje++; progContrato('premium'); }
     jog.combo = Math.min(CFG.COMBO_MAX, jog.combo + CFG.COMBO_GANHO);
     jog.comboT = CFG.COMBO_JANELA;
     SFX.corte();
@@ -783,10 +1041,19 @@ function atualizarCapis(dt) {
         cp.x = clamp(cp.x + Math.cos(cp.ang) * 22 * dt, 60, MW - 60);
         cp.y = clamp(cp.y + Math.sin(cp.ang) * 22 * dt, 60, MH - 60);
         if (dentroUsina(cp.x, cp.y, 40)) cp.ang += Math.PI;
+        for (const L of LAGOAS) {
+          const dx = (cp.x - L.x) / L.rx, dy = (cp.y - L.y) / L.ry;
+          if (dx * dx + dy * dy < 0.8) { cp.ang += Math.PI; break; }
+        }
       }
     }
     if (cp.cd <= 0 && jog.movendo && dist2(jog.x, jog.y, cp.x, cp.y) < 34 ** 2) {
       cp.cd = 2;
+      G.capisHoje++;
+      const ct = G.contrato;
+      if (ct && ct.id === 'pacifista' && !ct.feito && !ct.falhou) {
+        ct.falhou = true; toast('📜 Contrato do dia quebrado…', 2.2);
+      }
       dano(CFG.DANO_CAPIVARA);
       G.grana = Math.max(0, G.grana - CFG.MULTA_CAPIVARA);
       toast('🚨 MULTA AMBIENTAL −' + $(CFG.MULTA_CAPIVARA) + ' (capivara!)', 3);
@@ -855,16 +1122,23 @@ function clima(dt) {
 }
 
 /* ═══════════════════════════════════════════ ações (botões/teclas) ═ */
+function pertoDaUsina() {
+  const z = USINA.zona;
+  return jog.x > z.x - 40 && jog.x < z.x + z.w + 40 && jog.y > z.y - 40 && jog.y < z.y + z.h + 40;
+}
 function abastecer() {
   const cap = uv('tanque');
   if (jog.comb >= cap - 0.5) { toast('tanque já está cheio'); return; }
-  const gasto = Math.min((cap - jog.comb) * CFG.PRECO_LITRO, G.grana);
-  if (gasto < CFG.PRECO_LITRO) { toast('💸 Sem dinheiro para diesel'); SFX.multa(); return; }
-  const litros = gasto / CFG.PRECO_LITRO;
+  const naUsina = pertoDaUsina();
+  const precoL = CFG.PRECO_LITRO * (naUsina ? 0.5 : 1);
+  const gasto = Math.min((cap - jog.comb) * precoL, G.grana);
+  if (gasto < precoL) { toast('💸 Sem dinheiro para diesel'); SFX.multa(); return; }
+  const litros = gasto / precoL;
   jog.comb = Math.min(cap, jog.comb + litros); G.grana -= gasto;
-  toast('⛽ +' + Math.round(litros) + 'L  (−' + $(gasto) + ')'); SFX.diesel();
+  toast('⛽ +' + Math.round(litros) + 'L  (−' + $(gasto) + ')' + (naUsina ? ' · preço de usina!' : ''));
+  SFX.diesel();
   flut(jog.x, jog.y - 30, '−' + $(gasto), '#ffb35e');
-  droneAnim('⛽');
+  if (!naUsina) droneAnim('⛽');
 }
 function consertar() {
   if (jog.integ >= 99.5) { toast('máquina está 100%'); return; }
@@ -877,7 +1151,8 @@ function consertar() {
 }
 function vender(taxa) {
   if (jog.cargaUn <= 0) return;
-  const liquido = jog.cargaValor * G.tendencia[1] * (1 - taxa);
+  const mult = G.tendencia[1] * (G.frenesi.ativa ? CFG.FRENESI_MULT : 1);
+  const liquido = jog.cargaValor * mult * (1 - taxa);
   G.grana += liquido; G.vendidoHoje += liquido;
   G.picoGrana = Math.max(G.picoGrana || 0, G.grana);
   toast((taxa > 0 ? '📦 Drone vendeu por ' : '🏭 Usina pagou ') + $(liquido) +
@@ -885,6 +1160,7 @@ function vender(taxa) {
   flut(jog.x, jog.y - 34, '+' + $(liquido), '#ffe27a');
   if (taxa > 0) SFX.moeda(); else SFX.vendona();
   jog.cargaUn = 0; jog.cargaValor = 0;
+  if (taxa === 0) { G.vendasUsinaHoje++; progContrato('usina'); }
 }
 function venderDrone() {
   if (jog.cargaUn <= 0) { toast('caçamba vazia'); return; }
@@ -904,6 +1180,11 @@ function plantioValido(x, y) {
   if (dentroUsina(x, y, 50)) return false;
   const z = USINA.zona;
   if (x > z.x - 30 && x < z.x + z.w + 30 && y > z.y - 30 && y < z.y + z.h + 30) return false;
+  for (const L of LAGOAS) {
+    const dx = (x - L.x) / (L.rx + 24), dy = (y - L.y) / (L.ry + 24);
+    if (dx * dx + dy * dy < 1) return false;
+  }
+  for (const a of ARVORES) if (dist2(x, y, a.x, a.y) < 34 ** 2) return false;
   for (const p of pedras) if (dist2(x, y, p.x, p.y) < (p.r + 18) ** 2) return false;
   for (const pl of plantios) if (dist2(x, y, pl.x, pl.y) < 24 ** 2) return false;
   return true;
@@ -926,6 +1207,11 @@ function soqueiraCabe(x, y) {
   let ok = true;
   gPerto(x, y, 18, c => { if (dist2(x, y, c.x, c.y) < 18 ** 2) ok = false; });
   for (const p of pedras) if (dist2(x, y, p.x, p.y) < (p.r + 14) ** 2) ok = false;
+  for (const a of ARVORES) if (dist2(x, y, a.x, a.y) < 30 ** 2) ok = false;
+  for (const L of LAGOAS) {
+    const dx = (x - L.x) / (L.rx + 20), dy = (y - L.y) / (L.ry + 20);
+    if (dx * dx + dy * dy < 1) ok = false;
+  }
   return ok;
 }
 function irPlantio() {                            // oficina → plantio (mapa limpo)
@@ -946,6 +1232,22 @@ function encerrarPlantio() {
   sortearDia();
   if (re) toast('🌱 A soqueira rebrotou ' + re + ' touceiras de graça!', 3);
   G.fase = 'colheita';
+}
+
+function atualizarPassaros(dt) {
+  for (let i = passaros.length - 1; i >= 0; i--) {
+    const g = passaros[i]; g.t += dt;
+    if (g.estado === 'pousado') {
+      if (dist2(jog.x, jog.y, g.x, g.y) < 115 ** 2) {
+        g.estado = 'voando'; g.t = 0;
+        const a = Math.atan2(g.y - jog.y, g.x - jog.x) + rand(-0.5, 0.5);
+        g.vx = Math.cos(a) * 150; g.vy = Math.sin(a) * 150;
+      }
+    } else {
+      g.x += g.vx * dt; g.y += g.vy * dt;
+      if (g.t > 3) passaros.splice(i, 1);
+    }
+  }
 }
 
 /* partículas / toasts / flutuantes / drones cosméticos */
@@ -994,7 +1296,7 @@ function atualizarDrones(dt) {
 <script>
 'use strict';
 /* ═══════════════════════════════════════════════════════ render ════ */
-let LUZ = null, luzc = null;
+let LUZ = null, luzc = null, VIN = null;
 const botoesTela = [];                            // hit-test dos botões do HUD
 
 function comprarUpg(k) {
@@ -1006,10 +1308,27 @@ function comprarUpg(k) {
   SFX.moeda(); toast('🔩 ' + u.nome + ' nível ' + nivel[k] + '!');
 }
 
+function tintaDia(h) {                            // cor do dia (amanhecer/entardecer)
+  if (h < 8 * 60) {
+    const a = clamp(1 - (h - 360) / 120, 0, 1) * 0.15;
+    return a > 0.01 ? 'rgba(255,175,90,' + a.toFixed(3) + ')' : null;
+  }
+  if (h > 16 * 60) {
+    if (h < 18 * 60) {
+      const a = clamp((h - 960) / 120, 0, 1) * 0.12;
+      return 'rgba(255,145,60,' + a.toFixed(3) + ')';
+    }
+    const a = Math.min(0.22, clamp((h - 1080) / 90, 0, 1) * 0.16 + 0.12);
+    return 'rgba(140,80,150,' + a.toFixed(3) + ')';
+  }
+  return null;
+}
+
 function render() {
   botoesTela.length = 0;
   cam.x = clamp(jog.x - W / 2, 0, MW - W);
   cam.y = clamp(jog.y - H / 2, 0, MH - H);
+  const escuro = G.fase === 'colheita' ? clamp((G.hora - 18 * 60) / 150, 0, 1) * 0.72 : 0;
 
   ctx.save();
   if ((G.tremor || 0) > 0)
@@ -1017,6 +1336,25 @@ function render() {
   ctx.translate(-cam.x, -cam.y);
 
   ctx.drawImage(CHAO, 0, 0);
+
+  for (const r of rastros) {                                        // marcas de esteira
+    const a = 0.20 * (1 - r.t / 7);
+    if (a <= 0) continue;
+    ctx.fillStyle = 'rgba(58,45,26,' + a.toFixed(3) + ')';
+    const si = Math.sin(r.ang), co = Math.cos(r.ang);
+    ctx.fillRect(r.x - si * 11 - 2, r.y + co * 11 - 2, 4, 4);
+    ctx.fillRect(r.x + si * 11 - 2, r.y - co * 11 - 2, 4, 4);
+  }
+  ctx.strokeStyle = 'rgba(215,240,245,.4)'; ctx.lineWidth = 2;      // brilho da água
+  for (const L of LAGOAS) {
+    if (L.x + L.rx < cam.x || L.x - L.rx > cam.x + W ||
+        L.y + L.ry < cam.y || L.y - L.ry > cam.y + H) continue;
+    for (let i = 0; i < 5; i++) {
+      const px = L.x + Math.sin(G.t * 0.6 + i * 1.9) * L.rx * 0.55;
+      const py = L.y + Math.cos(G.t * 0.45 + i * 1.3) * L.ry * 0.5;
+      ctx.beginPath(); ctx.moveTo(px - 7, py); ctx.lineTo(px + 7, py); ctx.stroke();
+    }
+  }
 
   for (const cz of cinzas) {                                        // cinzas
     if (cz.x < cam.x - 20 || cz.x > cam.x + W + 20 || cz.y < cam.y - 20 || cz.y > cam.y + H + 20) continue;
@@ -1040,16 +1378,34 @@ function render() {
       ctx.beginPath(); ctx.arc(pl.x, pl.y, 8, 0, 7); ctx.stroke();
     }
   }
-  gPerto(cam.x + W / 2, cam.y + H / 2, 580, c => {                  // canas (com cull)
+  gPerto(cam.x + W / 2, cam.y + H / 2, 580, c => {                  // canas (cull + balanço)
+    ctx.fillStyle = 'rgba(16,26,8,.26)';
+    ctx.beginPath(); ctx.ellipse(c.x + 2, c.y + 8, 10, 4, 0, 0, 7); ctx.fill();
     const tr = c.fogo ? rand(-1.2, 1.2) : 0;
-    ctx.drawImage(c.prem ? SPR.canaPrem[c.vari] : SPR.cana[c.vari], c.x - 12 + tr, c.y - 12 + tr);
+    const sw = Math.sin(G.t * 1.7 + c.x * 0.035 + c.y * 0.02) * 1.5;
+    ctx.drawImage(c.prem ? SPR.canaPrem[c.vari] : SPR.cana[c.vari], c.x - 13 + tr + sw, c.y - 13 + tr);
+    if (c.prem && Math.floor(G.t * 5 + c.x) % 3 === 0) {
+      ctx.fillStyle = '#fff8d0'; ctx.fillRect(c.x + 6, c.y - 9, 2, 2);
+    }
   });
   for (const p of pedras) {                                         // pedras
     const s = SPR.pedra[p.vari];
     ctx.drawImage(s, p.x - s.width / 2, p.y - s.height / 2);
   }
+  for (const pc of pecas) {                                         // caixas de peças
+    if (pc.x < cam.x - 30 || pc.x > cam.x + W + 30 || pc.y < cam.y - 30 || pc.y > cam.y + H + 30) continue;
+    ctx.fillStyle = 'rgba(16,24,10,.28)';
+    ctx.beginPath(); ctx.ellipse(pc.x + 1, pc.y + 6, 8, 3.4, 0, 0, 7); ctx.fill();
+    const gl = 0.5 + 0.5 * Math.sin(G.t * 4 + pc.rot);
+    ctx.fillStyle = 'rgba(255,220,90,' + (0.15 + gl * 0.2).toFixed(3) + ')';
+    ctx.beginPath(); ctx.arc(pc.x, pc.y, 13 + gl * 3, 0, 7); ctx.fill();
+    ctx.save(); ctx.translate(pc.x, pc.y); ctx.rotate(G.t * 1.6 + pc.rot);
+    ctx.drawImage(SPR.peca, -9, -9); ctx.restore();
+  }
   for (const cp of capis) {                                         // capivaras
     if (cp.x < cam.x - 40 || cp.x > cam.x + W + 40 || cp.y < cam.y - 40 || cp.y > cam.y + H + 40) continue;
+    ctx.fillStyle = 'rgba(16,24,10,.28)';
+    ctx.beginPath(); ctx.ellipse(cp.x + 1, cp.y + 6, 13, 5, 0, 0, 7); ctx.fill();
     ctx.save(); ctx.translate(cp.x, cp.y);
     if (Math.cos(cp.ang) < 0) ctx.scale(-1, 1);
     const spr = cp.dorme ? SPR.capiDorme : SPR.capi[cp.anda ? (cp.frame * 6 | 0) % 2 : 0];
@@ -1082,17 +1438,57 @@ function render() {
   }
 
   { // colhedora
+    ctx.fillStyle = 'rgba(14,20,8,.32)';                            // sombra da máquina
+    ctx.beginPath(); ctx.ellipse(jog.x + 3, jog.y + 7, 27, 15, jog.ang, 0, 7); ctx.fill();
     ctx.save();
     ctx.translate(jog.x, jog.y); ctx.rotate(jog.ang);
     const fr = jog.movendo ? (jog.frame | 0) % 2 : 0;
     ctx.drawImage(SPR.colhedora[fr], -28, -18);
     ctx.restore();
+    if (Math.floor(G.t * 3) % 2 === 0) {                            // giroflex
+      const [gfx, gfy] = localPt(4, -9);
+      ctx.fillStyle = 'rgba(255,148,0,.95)'; ctx.fillRect(gfx - 2, gfy - 2, 4, 4);
+      if (escuro > 0.1) {
+        ctx.fillStyle = 'rgba(255,160,40,.22)';
+        ctx.beginPath(); ctx.arc(gfx, gfy, 15, 0, 7); ctx.fill();
+      }
+    }
     if (jog.quebrada && Math.floor(G.t * 3) % 2 === 0) {
       ctx.fillStyle = '#ff5a4a'; ctx.font = '700 18px "Courier New", monospace';
       ctx.fillText('!', jog.x - 3, jog.y - 26);
     }
   }
 
+  for (const a of ARVORES) {                                        // copas por cima de tudo
+    if (a.x < cam.x - 80 || a.x > cam.x + W + 80 || a.y < cam.y - 80 || a.y > cam.y + H + 80) continue;
+    const sA = SPR.arvore[a.v];
+    ctx.save(); ctx.translate(a.x, a.y);
+    ctx.rotate(Math.sin(G.t * 0.7 + a.x * 0.01) * 0.03);
+    ctx.drawImage(sA, -sA.width / 2, -sA.height / 2);
+    ctx.restore();
+  }
+  for (const g of passaros) {                                       // pássaros
+    if (g.x < cam.x - 60 || g.x > cam.x + W + 60 || g.y < cam.y - 60 || g.y > cam.y + H + 60) continue;
+    for (let i = 0; i < g.n; i++) {
+      const ox = (i % 3) * 10 - 10, oy = ((i / 3) | 0) * 8 - 4;
+      const bx = g.x + ox, by = g.y + oy;
+      if (g.estado === 'pousado') {
+        ctx.fillStyle = '#3a2f22';
+        ctx.fillRect(bx, by + Math.sin(G.t * 3 + i) * 1, 3, 3);
+        ctx.fillStyle = '#20180f'; ctx.fillRect(bx + 2, by - 1, 2, 2);
+      } else {
+        const fl = Math.sin(G.t * 16 + i) > 0 ? 3 : 0;
+        ctx.strokeStyle = '#241c12'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(bx - 4, by - fl);
+        ctx.lineTo(bx, by + 2); ctx.lineTo(bx + 4, by - fl); ctx.stroke();
+      }
+    }
+  }
+  if (escuro > 0.1 && Math.floor(G.t * 2) % 2 === 0) {              // luz da chaminé
+    ctx.fillStyle = '#ff4040'; ctx.fillRect(USINA.x + 27, USINA.y + 1, 4, 4);
+    ctx.fillStyle = 'rgba(255,64,64,.22)';
+    ctx.beginPath(); ctx.arc(USINA.x + 29, USINA.y + 3, 10, 0, 7); ctx.fill();
+  }
   for (const d of drones) {                                         // drones de serviço
     ctx.fillStyle = '#2f353c'; ctx.fillRect(d.x - 9, d.y - 3, 18, 6);
     ctx.fillStyle = 'rgba(180,190,200,.8)';
@@ -1108,6 +1504,15 @@ function render() {
     ctx.fillRect(p.x, p.y, p.tam, p.tam);
   }
   ctx.globalAlpha = 1;
+
+  for (const n of sombrasNuvem) {                                   // sombras de nuvem
+    if (n.x + n.rx < cam.x || n.x - n.rx > cam.x + W ||
+        n.y + n.ry < cam.y || n.y - n.ry > cam.y + H) continue;
+    ctx.fillStyle = 'rgba(14,24,34,.10)';
+    ctx.beginPath(); ctx.ellipse(n.x, n.y, n.rx, n.ry, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = 'rgba(14,24,34,.08)';
+    ctx.beginPath(); ctx.ellipse(n.x + n.rx * 0.3, n.y + 12, n.rx * 0.7, n.ry * 0.7, 0, 0, 7); ctx.fill();
+  }
 
   ctx.font = '700 13px "Courier New", monospace';                   // textos flutuantes
   for (const f of flutu) {
@@ -1144,8 +1549,10 @@ function render() {
     ctx.stroke();
   }
 
-  const escuro = clamp((G.hora - 18 * 60) / 150, 0, 1) * 0.72;      // noite + faróis
-  if (G.fase === 'colheita' && escuro > 0.02 && LUZ) {
+  const tinta = G.fase === 'colheita' ? tintaDia(G.hora) : null;    // cor do dia
+  if (tinta) { ctx.fillStyle = tinta; ctx.fillRect(0, 0, W, H); }
+
+  if (escuro > 0.02 && LUZ) {                                       // noite + faróis
     luzc.clearRect(0, 0, W, H);
     luzc.fillStyle = 'rgba(8, 12, 40,' + escuro + ')';
     luzc.fillRect(0, 0, W, H);
@@ -1173,6 +1580,8 @@ function render() {
     ctx.drawImage(LUZ, 0, 0);
   }
 
+  if (VIN) ctx.drawImage(VIN, 0, 0);                                // vinheta
+
   desenharHUD();
   if (G.fase === 'menu') desenharMenu();
   if (G.fase === 'oficina') desenharOficina();
@@ -1196,6 +1605,10 @@ function barra(x, y, w, h, frac, cor, pisca) {
   ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(x, y, w, h);
   ctx.fillStyle = pisca && Math.floor(G.t * 5) % 2 === 0 ? '#ffffff' : cor;
   ctx.fillRect(x + 2, y + 2, Math.max(2, (w - 4) * clamp(frac, 0, 1)), h - 4);
+  ctx.fillStyle = 'rgba(255,255,255,.16)';
+  ctx.fillRect(x + 2, y + 2, Math.max(2, (w - 4) * clamp(frac, 0, 1)), 2);
+  ctx.fillStyle = 'rgba(0,0,0,.35)';
+  for (let i = 1; i < 4; i++) ctx.fillRect(x + (w * i / 4) | 0, y + 2, 1, h - 4);
   ctx.strokeStyle = 'rgba(230,240,220,.35)'; ctx.lineWidth = 1;
   ctx.strokeRect(x + .5, y + .5, w - 1, h - 1);
 }
@@ -1218,12 +1631,22 @@ function chip(x, y, w, h, rot, sub, ativo, cb) {
 function desenharHUD() {
   if (G.fase === 'menu') return;
 
-  ctx.fillStyle = 'rgba(10,15,8,.78)'; ctx.fillRect(0, 0, W, 46);   // faixa superior
-  ctx.fillStyle = '#2c3a22'; ctx.fillRect(0, 44, W, 2);
+  const gTopo = ctx.createLinearGradient(0, 0, 0, 46);              // faixa superior
+  gTopo.addColorStop(0, 'rgba(16,24,12,.92)');
+  gTopo.addColorStop(1, 'rgba(6,10,5,.78)');
+  ctx.fillStyle = gTopo; ctx.fillRect(0, 0, W, 46);
+  ctx.fillStyle = '#3d5228'; ctx.fillRect(0, 44, W, 2);
+  ctx.fillStyle = 'rgba(240,200,20,.35)'; ctx.fillRect(0, 46, W, 1);
 
-  ctx.font = '700 24px "Courier New", monospace';                   // grana
-  ctx.fillStyle = '#ffd94d';
-  ctx.fillText($(G.grana), 12, 31);
+  { const p = 1 + (G._gPulso || 0) * 0.9;                           // grana com moeda
+    ctx.fillStyle = '#8a6b00'; ctx.beginPath(); ctx.arc(23, 24, 9 * p, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ffd94d'; ctx.beginPath(); ctx.arc(22, 23, 9 * p, 0, 7); ctx.fill();
+    ctx.fillStyle = '#8a6b00'; ctx.font = '700 13px "Courier New", monospace';
+    ctx.fillText('$', 18.5, 27.5);
+    ctx.save(); ctx.translate(38, 31); ctx.scale(p, p);
+    ctx.font = '700 24px "Courier New", monospace'; ctx.fillStyle = '#ffd94d';
+    ctx.fillText($(G.grana).slice(1), 0, 0);
+    ctx.restore(); }
 
   ctx.font = '700 15px "Courier New", monospace';
   ctx.fillStyle = '#cfe0b8';
@@ -1235,7 +1658,12 @@ function desenharHUD() {
 
   const td = G.tendencia;                                           // tendência
   ctx.fillStyle = td[0] === 'ALTA' ? '#7cd85a' : td[0] === 'BAIXA' ? '#ff7a5e' : '#cfd6dc';
-  ctx.fillText(td[3] + ' ' + td[0], 322, 29);
+  ctx.fillText(td[3] + ' ' + td[0], 322, 24);
+  if (G.frenesi.ativa) {
+    ctx.fillStyle = Math.floor(G.t * 6) % 2 === 0 ? '#ffd94d' : '#ff8f3e';
+    ctx.font = '700 12px "Courier New", monospace';
+    ctx.fillText('⚡ FRENESI x' + CFG.FRENESI_MULT, 322, 40);
+  }
 
   if (G.fase === 'colheita') {                                      // meta do dia
     ctx.font = '700 11px "Courier New", monospace';
@@ -1265,13 +1693,34 @@ function desenharHUD() {
   ctx.font = '700 13px "Courier New", monospace';
   ctx.fillText(jog.cargaUn + '/' + uv('cacamba'), 844, 31);
   ctx.font = '11px "Courier New", monospace'; ctx.fillStyle = '#ffe27a';
-  ctx.fillText('~' + $(jog.cargaValor * G.tendencia[1]), 844, 42);
+  ctx.fillText('~' + $(jog.cargaValor * G.tendencia[1] * (G.frenesi.ativa ? CFG.FRENESI_MULT : 1)), 844, 42);
+
+  if (G.fase === 'colheita' && G.contrato) {                        // contrato do dia
+    const c = G.contrato;
+    ctx.font = '700 11px "Courier New", monospace';
+    const prog = c.id === 'pacifista'
+      ? (c.falhou ? '✗' : (c.feito ? '✓' : '…'))
+      : Math.min(c.prog, c.alvo) + '/' + c.alvo + (c.feito ? ' ✓' : '');
+    const txt = '📜 ' + c.desc + ' · ' + prog + '  +' + $(c.bonus);
+    const tw = ctx.measureText(txt).width + 18;
+    ctx.fillStyle = 'rgba(12,18,10,.8)'; ctx.fillRect(10, 52, tw, 20);
+    ctx.strokeStyle = c.feito ? '#7cd85a' : c.falhou ? '#ff6a5e' : 'rgba(240,200,20,.55)';
+    ctx.lineWidth = 1.5; ctx.strokeRect(10, 52, tw, 20);
+    ctx.fillStyle = c.feito ? '#a9e88c' : c.falhou ? '#ff8f80' : '#eef2e0';
+    ctx.fillText(txt, 19, 66);
+  }
 
   { // radar
     const rx = W - 158, ry = 54, rw = 146, rh = 110;
     ctx.fillStyle = 'rgba(8,14,8,.82)'; ctx.fillRect(rx, ry, rw, rh);
     ctx.strokeStyle = '#3c4a30'; ctx.lineWidth = 2; ctx.strokeRect(rx, ry, rw, rh);
     const sx = rw / MW, sy = rh / MH;
+    ctx.fillStyle = '#2e6b7c';
+    for (const L of LAGOAS)
+      ctx.fillRect(rx + (L.x - L.rx) * sx, ry + (L.y - L.ry) * sy,
+                   Math.max(3, L.rx * 2 * sx), Math.max(2, L.ry * 2 * sy));
+    ctx.fillStyle = '#274a1c';
+    for (const a of ARVORES) ctx.fillRect(rx + a.x * sx - 1, ry + a.y * sy - 1, 3, 3);
     ctx.fillStyle = 'rgba(160,90,220,.9)';
     ctx.fillRect(rx + USINA.x * sx, ry + USINA.y * sy, USINA.w * sx, USINA.h * sy);
     ctx.fillStyle = 'rgba(240,200,20,.9)';
@@ -1285,6 +1734,10 @@ function desenharHUD() {
     for (const p of pedras) ctx.fillRect(rx + p.x * sx - 1, ry + p.y * sy - 1, 3, 3);
     ctx.fillStyle = '#b08050';
     for (const cp of capis) ctx.fillRect(rx + cp.x * sx - 1, ry + cp.y * sy - 1, 3, 3);
+    if (Math.floor(G.t * 4) % 2 === 0) {
+      ctx.fillStyle = '#ffd94d';
+      for (const pc of pecas) ctx.fillRect(rx + pc.x * sx - 1, ry + pc.y * sy - 1, 3, 3);
+    }
     if (Math.floor(G.t * 6) % 2 === 0) {
       ctx.fillStyle = '#ff5030';
       for (const f of fogos) ctx.fillRect(rx + f.c.x * sx - 1, ry + f.c.y * sy - 1, 3, 3);
@@ -1344,7 +1797,10 @@ function desenharHUD() {
     }
     chip(bx, by, bw, bh, '📦 VENDER  3', 'drone, frete −20%', jog.cargaUn > 0, venderDrone); by -= 42;
     chip(bx, by, bw, bh, '🔧 CONSERTO  2', $((100 - jog.integ) * CFG.PRECO_REPARO), jog.integ < 99.5, consertar); by -= 42;
-    chip(bx, by, bw, bh, '⛽ DIESEL  1', $((uv('tanque') - jog.comb) * CFG.PRECO_LITRO), jog.comb < uv('tanque') - 0.5, abastecer);
+    const descUsina = pertoDaUsina();
+    chip(bx, by, bw, bh, '⛽ DIESEL  1',
+         $((uv('tanque') - jog.comb) * CFG.PRECO_LITRO * (descUsina ? 0.5 : 1)) + (descUsina ? ' 🏭−50%' : ''),
+         jog.comb < uv('tanque') - 0.5, abastecer);
   }
 
   { // som + pausa (cliáveis)
@@ -1387,7 +1843,7 @@ function painel(wp, hp) {
 
 function desenharMenu() {
   ctx.fillStyle = 'rgba(8,12,6,.55)'; ctx.fillRect(0, 0, W, H);
-  const { x, y } = painel(640, 380);
+  const { x, y } = painel(660, 396);
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd94d';
   ctx.font = '700 44px "Courier New", monospace';
@@ -1403,19 +1859,20 @@ function desenharMenu() {
   ctx.fillStyle = '#dfe8d2'; ctx.font = '13px "Courier New", monospace';
   const li = [
     'Colha, venda e cumpra a META até as 22:00 — ou o contrato acaba.',
-    'Usina paga 100% na DESCARGA · drone vende na hora com −20%.',
-    'Combo x4 vira TURBO · raios incendeiam · capivara dá multa!',
+    'Usina paga 100% (e diesel pela metade!) · drone vende com −20%.',
+    'Combo x4 = TURBO com corte +50% · raios queimam · capivara multa.',
+    'Contrato do dia 📜, FRENESI ⚡ no mercado e peças ⚙ pela pista.',
     'Entre um dia e outro: OFICINA de upgrades e cota de PLANTIO.',
   ];
-  li.forEach((l, i) => ctx.fillText(l, W / 2, y + 208 + i * 22));
+  li.forEach((l, i) => ctx.fillText(l, W / 2, y + 206 + i * 21));
 
   ctx.fillStyle = '#9fbf8a'; ctx.font = '700 13px "Courier New", monospace';
-  ctx.fillText('🏆 Recordes: ' + G.recDias + ' dia(s) · pico ' + $(G.recGrana), W / 2, y + 310);
+  ctx.fillText('🏆 Recordes: ' + G.recDias + ' dia(s) · pico ' + $(G.recGrana), W / 2, y + 330);
 
   ctx.fillStyle = '#ffd94d';
   ctx.globalAlpha = 0.6 + 0.4 * Math.sin(G.t * 4);
   ctx.font = '700 17px "Courier New", monospace';
-  ctx.fillText('ESPAÇO ou TOQUE para assumir a máquina', W / 2, y + 350);
+  ctx.fillText('ESPAÇO ou TOQUE para assumir a máquina', W / 2, y + 366);
   ctx.globalAlpha = 1; ctx.textAlign = 'left';
 }
 
@@ -1464,29 +1921,30 @@ function desenharPausa() {
 
 function desenharAjuda() {
   ctx.fillStyle = 'rgba(8,12,6,.7)'; ctx.fillRect(0, 0, W, H);
-  const { x, y } = painel(620, 400);
+  const { x, y } = painel(640, 436);
   ctx.fillStyle = '#ffd94d'; ctx.font = '700 22px "Courier New", monospace';
   ctx.textAlign = 'center'; ctx.fillText('📖 MANUAL DO OPERADOR', W / 2, y + 40);
   ctx.textAlign = 'left';
   ctx.fillStyle = '#dfe8d2'; ctx.font = '13px "Courier New", monospace';
   const li = [
     'WASD / setas ..... dirigir (esteiras giram no lugar)',
-    '1 ................ diesel via drone ($' + CFG.PRECO_LITRO + '/L)',
+    '1 ................ diesel via drone (50% mais barato na usina!)',
     '2 ................ conserto do motor ($' + CFG.PRECO_REPARO + '/pt)',
     '3 ................ vender carga via drone (frete −20%)',
     '4 ................ drone bombeiro ($' + CFG.PRECO_BOMBEIRO + ', apaga tudo)',
-    'ESPAÇO ........... plantar muda (fase de plantio)',
-    'Q ................ alternar muda normal/premium',
+    'ESPAÇO / Q ....... plantar · alternar muda normal/premium',
     'P / M / H ........ pausa · som · este manual',
     '',
-    'Descarregue DENTRO da zona amarela da usina = 100% do valor.',
-    'Corte sem parar: combo x4 ativa o TURBO (2x veloz, diesel 0).',
-    'Chuva faz lama (esteiras melhores sofrem menos) e apaga fogo.',
-    'Capivaras dormem à noite — desviar delas é mais barato.',
+    'Zona amarela da usina: descarga com 100% do valor da carga.',
+    'Combo x4 ativa o TURBO: 2x veloz, diesel 0 e corte +50%.',
+    'A máquina desgasta rodando — caixas de peças ⚙ ajudam de graça.',
+    'Contrato do dia 📜 paga bônus · FRENESI ⚡ dobra toda venda.',
+    'Chuva faz lama (esteiras boas sofrem menos) e apaga incêndios.',
+    'Capivaras moram perto das lagoas e dormem à noite. Água barra!',
   ];
-  li.forEach((l, i) => ctx.fillText(l, x + 40, y + 76 + i * 23));
+  li.forEach((l, i) => ctx.fillText(l, x + 40, y + 72 + i * 24));
   ctx.fillStyle = '#9fbf8a';
-  ctx.fillText('H para voltar', x + 40, y + 380);
+  ctx.fillText('H para voltar', x + 40, y + 414);
 }
 
 function desenharFim() {
@@ -1637,11 +2095,20 @@ function loop(ts) {
 fazerSprites();
 fazerChao();
 [LUZ, luzc] = offscreen(W, H);
+{ const [v, vc] = offscreen(W, H);
+  const gv = vc.createRadialGradient(W / 2, H / 2, H * 0.42, W / 2, H / 2, H * 0.80);
+  gv.addColorStop(0, 'rgba(0,0,0,0)');
+  gv.addColorStop(1, 'rgba(6,10,4,.34)');
+  vc.fillStyle = gv; vc.fillRect(0, 0, W, H);
+  VIN = v; }
+for (let i = 0; i < 4; i++)
+  sombrasNuvem.push({ x: rand(0, MW), y: rand(0, MH), rx: rand(170, 300), ry: rand(100, 160), vx: rand(7, 14) });
 requestAnimationFrame(loop);
 
 /* gancho de depuração/testes: __T no console (F12) */
 globalThis.__T = {
   CFG, G, jog, nivel, canas, pedras, capis, fogos, lamas, plantios, cortadas, cinzas,
+  pecas, rastros, passaros, ARVORES, LAGOAS,
   api: { iniciarJogo, vender, venderDrone, abastecer, consertar, bombeiro, plantar,
          irPlantio, encerrarPlantio, caiRaio, acender, fim, sortearDia, novaCana,
          comprarUpg, update, uv, localPt, render },
