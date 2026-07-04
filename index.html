@@ -61,7 +61,7 @@
   <div id="frame"><canvas id="game" width="960" height="540"></canvas></div>
   <footer>
     <b>WASD/setas</b> dirigir · <b>1</b> diesel · <b>2</b> conserto · <b>3</b> vender (drone) ·
-    <b>4</b> bombeiro · <b>ESPAÇO</b> plantar · <b>Q</b> muda premium · <b>P</b> pausa · <b>M</b> som · <b>H</b> ajuda
+    <b>4</b> bombeiro · <b>5</b> defensivo · <b>B</b> bolsa · <b>ESPAÇO</b> plantar · <b>Q</b> muda premium · <b>P</b> pausa · <b>M</b> som · <b>H</b> ajuda
   </footer>
 
 <script>
@@ -115,6 +115,12 @@ const CFG = {
   DESGASTE_S: 0.055,                 // desgaste natural do motor rodando (pt/s)
   PECAS_DIA: 6, PECA_INTEG: 10, PECA_GRANA: 20,
   FRENESI_CHANCE: 0.55, FRENESI_MIN: 150, FRENESI_MULT: 2,
+  DEFENSIVO_CUSTO: 40, DEFENSIVO_RAIO: 110,
+  PRAGA_CHANCE: 0.65,                // chance/dia de surto de broca
+  PRAGA_ESPALHA_T: 4.0, PRAGA_RAIO: 60,
+  PRAGA_MORTE_T: 26,                 // s até a broca matar a touceira
+  PRAGA_VALOR: 0.5,                  // cana broqueada vale metade
+  BOLSA_PRECO_INI: 100, BOLSA_TAXA_RAPIDA: 0.10,
 
   /* upgrades da oficina: [nível 0..3] + preços dos níveis 1..3 */
   UPG: {
@@ -184,6 +190,8 @@ const G = {
   frenesi: { hoje: false, ini: 0, fim: 0, ativa: false },
   contrato: null,
   premHoje: 0, vendasUsinaHoje: 0, capisHoje: 0,
+  praga: { hoje: false, hora: 0, lancada: false },
+  bolsa: { preco: 100, var: 0, cotas: 0, hist: [100] },
 };
 const nivel = { motor: 0, esteiras: 0, cacamba: 0, tanque: 0 };
 const uv = k => CFG.UPG[k].val[nivel[k]];       // valor atual de um upgrade
@@ -201,7 +209,7 @@ const jog = {                                    // a colhedora
 const canas = [], pedras = [], capis = [], fogos = [], lamas = [],
       cinzas = [], plantios = [], cortadas = [], parts = [], toasts = [],
       drones = [], flutu = [], pecas = [], rastros = [], passaros = [],
-      sombrasNuvem = [];
+      sombrasNuvem = [], pragas = [], defensivos = [];
 const cam = { x: 0, y: 0 };
 const dpad = { fwd: false, re: false, esq: false, dir: false };
 const TOQUE = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
@@ -292,6 +300,9 @@ const SFX = {
   alarme()  { beep(880, 880, 0.09, 'square', 0.2); beep(880, 880, 0.09, 'square', 0.2, 0.14); },
   reparo()  { ruido(0.05, 0.2, 3200); beep(500, 500, 0.05, 'square', 0.1, 0.06); ruido(0.05, 0.2, 3200, 0.12); },
   peca()    { beep(1040, 1040, 0.06, 'square', 0.14); beep(1560, 1560, 0.08, 'square', 0.12, 0.07); },
+  spray()   { ruido(0.28, 0.22, 5200); ruido(0.18, 0.15, 6400, 0.1); },
+  praga()   { for (let i = 0; i < 5; i++) beep(720 - i * 90, 640 - i * 90, 0.05, 'square', 0.12, i * 0.06);
+              ruido(0.3, 0.12, 900, 0.1); },
   diesel()  { beep(240, 180, 0.25, 'sine', 0.16); },
   bombeiro(){ ruido(0.5, 0.3, 600); beep(520, 760, 0.2, 'sine', 0.1); },
   capi()    { beep(700, 1000, 0.1, 'sine', 0.12); },
@@ -593,8 +604,8 @@ function gPerto(x, y, r, cb) {                    // varre só as células vizin
 <script>
 'use strict';
 /* ══════════════════════════════ geração de mundo e ciclo da safra ══ */
-function novaCana(x, y, prem) {
-  const c = { x, y, prem, vari: randi(0, prem ? 1 : 2), fogo: false };
+function novaCana(x, y, prem, prot) {
+  const c = { x, y, prem, vari: randi(0, prem ? 1 : 2), fogo: false, prot: !!prot, praga: false };
   canas.push(c); gAdd(c); return c;
 }
 const dentroUsina = (x, y, m = 0) =>
@@ -674,6 +685,19 @@ function sortearDia() {
     G.frenesi.fim = G.frenesi.ini + CFG.FRENESI_MIN;
   }
   sortearContrato();
+  pragas.length = 0; defensivos.length = 0;
+  G.praga = { hoje: Math.random() < CFG.PRAGA_CHANCE, hora: rand(8 * 60, 18 * 60), lancada: false };
+  if (G.dia > 1) {                                 // pregão diário da CANA11
+    const ant = G.bolsa.preco;
+    let f = rand(0.86, 1.20);
+    if (Math.random() < 0.12) f = Math.random() < 0.5 ? rand(0.55, 0.75) : rand(1.30, 1.62);
+    G.bolsa.preco = clamp(G.bolsa.preco * f, 25, 999);
+    G.bolsa.var = G.bolsa.preco / ant - 1;
+    G.bolsa.hist.push(G.bolsa.preco);
+    if (G.bolsa.hist.length > 16) G.bolsa.hist.shift();
+    if (G.bolsa.var > 0.25) toast('📈 CANA11 disparou +' + Math.round(G.bolsa.var * 100) + '%!', 3);
+    if (G.bolsa.var < -0.25) toast('📉 CANA11 despencou ' + Math.round(G.bolsa.var * 100) + '%!', 3);
+  }
   pecas.length = 0;
   for (let i = 0; i < CFG.PECAS_DIA; i++) {
     let x, y, t = 0;
@@ -727,6 +751,9 @@ function iniciarJogo() {
   canas.length = 0; gLimpar();
   plantios.length = 0; parts.length = 0; toasts.length = 0; drones.length = 0; flutu.length = 0;
   pecas.length = 0; rastros.length = 0; passaros.length = 0;
+  pragas.length = 0; defensivos.length = 0;
+  G.bolsa = { preco: CFG.BOLSA_PRECO_INI, var: 0, cotas: 0, hist: [CFG.BOLSA_PRECO_INI] };
+  G._dicaB = false;
   G._gAnt = G.grana; G._gPulso = 0;
   gerarMundo(); plantarCampoInicial(); sortearDia();
   G.fase = 'colheita'; G.pausa = false; G.ajuda = false;
@@ -785,6 +812,7 @@ function update(dt) {
     cortar();
     atualizarCapis(dt);
     atualizarFogos(dt);
+    atualizarPragas(dt);
     atualizarPassaros(dt);
     clima(dt);
     if (Math.random() < dt * 2)                   // fumaça da chaminé
@@ -793,7 +821,8 @@ function update(dt) {
   } else {
     chuvaSom(false);
     atualizarPassaros(dt);
-    const possivel = G.grana + jog.cargaValor * G.tendencia[1] * (1 - CFG.TAXA_DRONE);
+    const possivel = G.grana + jog.cargaValor * G.tendencia[1] * (1 - CFG.TAXA_DRONE) +
+                     bolsaValor() * (1 - CFG.BOLSA_TAXA_RAPIDA);
     if (G.plantadasHoje < G.metaPlantio && possivel < CFG.MUDA_NORMAL) fim('plantio');
   }
   combos(dt);
@@ -802,6 +831,8 @@ function update(dt) {
 
 function relogio(dt) {
   G.hora += dt * CFG.MIN_POR_SEG;
+  G.bolsa.preco = clamp(G.bolsa.preco * (1 + rand(-1, 1) * 0.0006), 25, 999);
+  if (G.praga.hoje && !G.praga.lancada && G.hora >= G.praga.hora) lancarPraga();
   const fz = G.frenesi;
   if (fz.hoje) {
     const dentro = G.hora >= fz.ini && G.hora <= fz.fim;
@@ -953,8 +984,19 @@ function moverJogador(dt, colhendo) {
   if (secoAgora && !jog.seco) { toast('⛽ SEM DIESEL! Peça reabastecimento (1)', 3); SFX.alarme(); }
   jog.seco = secoAgora;
 
-  if (jog.seco && G.grana < CFG.PRECO_LITRO && jog.cargaValor <= 0) fim('abandono');
-  if (jog.quebrada && G.grana < CFG.PRECO_REPARO && jog.cargaValor <= 0) fim('quebra');
+  const semSaida = jog.cargaValor <= 0 && bolsaValor() <= 0;
+  if (jog.seco && G.grana < CFG.PRECO_LITRO) {
+    if (semSaida) fim('abandono');
+    else if (G.bolsa.cotas > 0 && !G._dicaB) {
+      G._dicaB = true; toast('📉 Sem caixa! Resgate a bolsa (B) para não perder o contrato', 3);
+    }
+  }
+  if (jog.quebrada && G.grana < CFG.PRECO_REPARO) {
+    if (semSaida) fim('quebra');
+    else if (G.bolsa.cotas > 0 && !G._dicaB) {
+      G._dicaB = true; toast('📉 Sem caixa! Resgate a bolsa (B) para pagar o conserto', 3);
+    }
+  }
 
   if (jog.movendo && Math.random() < dt * 18) {   // poeira/lama das esteiras
     const [tx, ty] = localPt(-24, rand(-14, 14));
@@ -990,10 +1032,13 @@ function cortar() {
     gDel(c);
     const k = canas.indexOf(c); if (k >= 0) canas.splice(k, 1);
     if (c.fogo) { const f = fogos.find(f => f.c === c); if (f) fogos.splice(fogos.indexOf(f), 1); }
+    const broqueada = c.praga;
+    if (broqueada) removerPraga(c);
     cortadas.push({ x: c.x, y: c.y });
     jog.cargaUn++;
     jog.cargaValor += CFG.CANA_VALOR * (c.prem ? CFG.PREMIUM_MULT : 1) * jog.combo *
-                      (jog.turbo > 0 ? 1.5 : 1);
+                      (jog.turbo > 0 ? 1.5 : 1) * (broqueada ? CFG.PRAGA_VALOR : 1);
+    if (broqueada) flut(c.x, c.y - 12, '🐛 broqueada', '#c9a86a');
     if (c.prem) { G.premHoje++; progContrato('premium'); }
     jog.combo = Math.min(CFG.COMBO_MAX, jog.combo + CFG.COMBO_GANHO);
     jog.comboT = CFG.COMBO_JANELA;
@@ -1067,6 +1112,52 @@ function atualizarCapis(dt) {
   }
 }
 
+/* praga: broca da cana */
+function infestar(c) {
+  if (!c || c.prot || c.praga) return;
+  c.praga = true;
+  pragas.push({ c, t: 0, salto: CFG.PRAGA_ESPALHA_T });
+}
+function removerPraga(c) {
+  if (!c.praga) return;
+  c.praga = false;
+  const k = pragas.findIndex(p => p.c === c);
+  if (k >= 0) pragas.splice(k, 1);
+}
+function lancarPraga() {
+  G.praga.lancada = true;
+  const livres = canas.filter(c => !c.prot && !c.praga);
+  if (!livres.length) return;
+  const n = Math.min(livres.length, 1 + Math.min(2, ((G.dia - 1) / 3) | 0));
+  for (let i = 0; i < n; i++) infestar(escolha(livres));
+  toast('🐛 BROCA DA CANA! Colha rápido ou aplique defensivo (5)', 3.5);
+  SFX.praga(); tremer(0.15);
+}
+function atualizarPragas(dt) {
+  for (let i = pragas.length - 1; i >= 0; i--) {
+    const p = pragas[i]; p.t += dt; p.salto -= dt;
+    if (p.salto <= 0) {                            // a broca pula p/ a vizinha
+      p.salto = CFG.PRAGA_ESPALHA_T;
+      let alvo = null;
+      gPerto(p.c.x, p.c.y, CFG.PRAGA_RAIO, c2 => {
+        if (!alvo && c2 !== p.c && !c2.prot && !c2.praga &&
+            dist2(c2.x, c2.y, p.c.x, p.c.y) < CFG.PRAGA_RAIO ** 2) alvo = c2;
+      });
+      if (alvo) infestar(alvo);
+    }
+    if (p.t > CFG.PRAGA_MORTE_T) {                 // touceira consumida
+      const c = p.c;
+      c.praga = false;
+      gDel(c); const k = canas.indexOf(c); if (k >= 0) canas.splice(k, 1);
+      cinzas.push({ x: c.x, y: c.y, seca: true });
+      pragas.splice(i, 1);
+      part(c.x, c.y, { vx: [-30, 30], vy: [-50, -10], vida: [.4, .8], tam: [2, 3],
+        cores: ['#a8863c', '#6b552a'], grav: 120, n: 6 });
+      continue;
+    }
+  }
+}
+
 /* fogo, raios e clima */
 function acender(c) { if (c.fogo) return; c.fogo = true; fogos.push({ c, t: 0, esp: false }); }
 function apagarFogo(f) {
@@ -1093,6 +1184,7 @@ function atualizarFogos(dt) {
     }
     if (f.t > CFG.FOGO_QUEIMA_T) {                // virou cinza
       const c = f.c;
+      removerPraga(c);
       gDel(c); const k = canas.indexOf(c); if (k >= 0) canas.splice(k, 1);
       cinzas.push({ x: c.x, y: c.y });
       fogos.splice(i, 1);
@@ -1175,6 +1267,55 @@ function bombeiro() {
   toast('🚒 Drone bombeiro apagou tudo  (−' + $(CFG.PRECO_BOMBEIRO) + ')', 2.6);
   SFX.bombeiro();
 }
+function aplicarDefensivo() {
+  if (G.fase !== 'colheita' && G.fase !== 'plantio') return;
+  if (G.grana < CFG.DEFENSIVO_CUSTO) { toast('💸 Defensivo custa ' + $(CFG.DEFENSIVO_CUSTO)); SFX.multa(); return; }
+  G.grana -= CFG.DEFENSIVO_CUSTO;
+  const [sx, sy] = localPt(30, 0);
+  const R = CFG.DEFENSIVO_RAIO;
+  if (G.fase === 'colheita') {
+    let n = 0;
+    gPerto(sx, sy, R, c => {
+      if (dist2(sx, sy, c.x, c.y) > R * R) return;
+      if (c.praga) removerPraga(c);
+      if (!c.prot) { c.prot = true; n++; }
+    });
+    toast('🧪 Defensivo aplicado: ' + n + ' touceiras protegidas  (−' + $(CFG.DEFENSIVO_CUSTO) + ')', 2.6);
+  } else {
+    defensivos.push({ x: sx, y: sy, r: R });
+    for (const pl of plantios)
+      if (dist2(sx, sy, pl.x, pl.y) < R * R) pl.prot = true;
+    toast('🧪 Área tratada! Mudas e soqueira daqui nascem protegidas  (−' + $(CFG.DEFENSIVO_CUSTO) + ')', 2.8);
+  }
+  SFX.spray(); tremer(0.06);
+  part(sx, sy, { vx: [-90, 90], vy: [-90, 90], vida: [.35, .7], tam: [2, 3],
+    cores: ['#9fe7c0', '#c8f2dd', '#7fd4a8'], grav: -20, n: 26 });
+  droneAnim('🧪');
+}
+
+/* bolsa de valores — CANA11 */
+function bolsaValor() { return G.bolsa.cotas * G.bolsa.preco; }
+function comprarCotas(n) {
+  const custo = n * G.bolsa.preco;
+  if (G.grana < custo) { toast('💸 ' + n + ' cota(s) = ' + $(custo)); SFX.multa(); return; }
+  G.grana -= custo; G.bolsa.cotas += n;
+  toast('📈 Comprou ' + n + ' cota(s) de CANA11  (−' + $(custo) + ')'); SFX.moeda();
+}
+function venderCotas(n, taxa = 0) {
+  n = Math.min(n, G.bolsa.cotas);
+  if (n <= 0) { toast('sem cotas para vender'); return; }
+  const liquido = n * G.bolsa.preco * (1 - taxa);
+  G.bolsa.cotas -= n; G.grana += liquido;
+  G.picoGrana = Math.max(G.picoGrana || 0, G.grana);
+  toast('📉 Vendeu ' + n + ' cota(s): +' + $(liquido) +
+        (taxa > 0 ? ' (taxa rápida −' + Math.round(taxa * 100) + '%)' : ''));
+  SFX.vendona();
+}
+function resgatarBolsa() {
+  if (G.bolsa.cotas <= 0) { toast('você não tem cotas na bolsa'); return; }
+  venderCotas(G.bolsa.cotas, CFG.BOLSA_TAXA_RAPIDA);
+}
+
 function plantioValido(x, y) {
   if (x < 60 || y < 60 || x > MW - 60 || y > MH - 60) return false;
   if (dentroUsina(x, y, 50)) return false;
@@ -1196,7 +1337,8 @@ function plantar() {
   if (!plantioValido(sx, sy)) { toast('solo ocupado aqui'); SFX.multa(); return; }
   if (G.grana < custo) { toast('💸 Muda ' + (prem ? 'premium ' : '') + 'custa ' + $(custo)); SFX.multa(); return; }
   G.grana -= custo;
-  plantios.push({ x: sx, y: sy, prem });
+  const dentro = defensivos.some(d => dist2(sx, sy, d.x, d.y) < d.r * d.r);
+  plantios.push({ x: sx, y: sy, prem, prot: dentro });
   G.plantadasHoje++;
   SFX.plantar();
   part(sx, sy, { vx: [-25, 25], vy: [-40, -8], vida: [.3, .5], tam: [2, 3],
@@ -1223,10 +1365,13 @@ function encerrarPlantio() {
   if (G.plantadasHoje < G.metaPlantio) {
     toast('cota de plantio: faltam ' + (G.metaPlantio - G.plantadasHoje) + ' mudas'); SFX.multa(); return;
   }
-  for (const pl of plantios) novaCana(pl.x, pl.y, pl.prem);
+  for (const pl of plantios) novaCana(pl.x, pl.y, pl.prem, pl.prot);
   let re = 0;
   for (const s of cortadas)
-    if (Math.random() < CFG.SOQUEIRA && soqueiraCabe(s.x, s.y)) { novaCana(s.x, s.y, false); re++; }
+    if (Math.random() < CFG.SOQUEIRA && soqueiraCabe(s.x, s.y)) {
+      novaCana(s.x, s.y, false, defensivos.some(d => dist2(s.x, s.y, d.x, d.y) < d.r * d.r));
+      re++;
+    }
   plantios.length = 0;
   G.dia++;
   sortearDia();
@@ -1358,9 +1503,10 @@ function render() {
 
   for (const cz of cinzas) {                                        // cinzas
     if (cz.x < cam.x - 20 || cz.x > cam.x + W + 20 || cz.y < cam.y - 20 || cz.y > cam.y + H + 20) continue;
-    ctx.fillStyle = 'rgba(34,30,26,.75)';
+    ctx.fillStyle = cz.seca ? 'rgba(96,78,38,.7)' : 'rgba(34,30,26,.75)';
     ctx.beginPath(); ctx.ellipse(cz.x, cz.y, 10, 6, 0, 0, 7); ctx.fill();
-    ctx.fillStyle = 'rgba(70,62,54,.6)'; ctx.fillRect(cz.x - 3, cz.y - 2, 2, 2);
+    ctx.fillStyle = cz.seca ? 'rgba(150,122,58,.6)' : 'rgba(70,62,54,.6)';
+    ctx.fillRect(cz.x - 3, cz.y - 2, 2, 2);
   }
   for (const l of lamas) {                                          // lama
     if (l.x < cam.x - 70 || l.x > cam.x + W + 70 || l.y < cam.y - 70 || l.y > cam.y + H + 70) continue;
@@ -1371,21 +1517,39 @@ function render() {
     ctx.fillStyle = 'rgba(140,116,80,.35)';
     ctx.beginPath(); ctx.ellipse(l.x - l.r * 0.25, l.y - l.r * 0.2, l.r * 0.3, l.r * 0.14, 0, 0, 7); ctx.fill();
   }
+  if (G.fase === 'plantio')
+    for (const d of defensivos) {                                   // zonas tratadas
+      ctx.fillStyle = 'rgba(120,220,170,.08)';
+      ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, 7); ctx.fill();
+      ctx.strokeStyle = 'rgba(120,220,170,.55)'; ctx.setLineDash([6, 6]); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
+    }
   for (const pl of plantios) {                                      // brotos
     ctx.drawImage(SPR.broto, pl.x - 6, pl.y - 8);
     if (pl.prem) {
       ctx.strokeStyle = 'rgba(240,200,20,.8)'; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(pl.x, pl.y, 8, 0, 7); ctx.stroke();
     }
+    if (pl.prot) { ctx.fillStyle = '#7fe0b8'; ctx.fillRect(pl.x + 5, pl.y - 9, 3, 3); }
   }
   gPerto(cam.x + W / 2, cam.y + H / 2, 580, c => {                  // canas (cull + balanço)
     ctx.fillStyle = 'rgba(16,26,8,.26)';
     ctx.beginPath(); ctx.ellipse(c.x + 2, c.y + 8, 10, 4, 0, 0, 7); ctx.fill();
-    const tr = c.fogo ? rand(-1.2, 1.2) : 0;
+    const tr = c.fogo ? rand(-1.2, 1.2) : (c.praga ? Math.sin(G.t * 9 + c.x) * 0.8 : 0);
     const sw = Math.sin(G.t * 1.7 + c.x * 0.035 + c.y * 0.02) * 1.5;
     ctx.drawImage(c.prem ? SPR.canaPrem[c.vari] : SPR.cana[c.vari], c.x - 13 + tr + sw, c.y - 13 + tr);
     if (c.prem && Math.floor(G.t * 5 + c.x) % 3 === 0) {
       ctx.fillStyle = '#fff8d0'; ctx.fillRect(c.x + 6, c.y - 9, 2, 2);
+    }
+    if (c.prot) { ctx.fillStyle = 'rgba(127,224,184,.9)'; ctx.fillRect(c.x - 11, c.y - 11, 3, 3); }
+    if (c.praga) {                                                  // bichinhos da broca
+      const b = G.t * 3 + c.x;
+      ctx.fillStyle = 'rgba(180,140,40,.16)';
+      ctx.beginPath(); ctx.arc(c.x, c.y, 12, 0, 7); ctx.fill();
+      ctx.fillStyle = '#5b3d1e';
+      ctx.fillRect(c.x + Math.sin(b) * 6 - 1, c.y + Math.cos(b * 1.3) * 5 - 1, 3, 3);
+      ctx.fillRect(c.x + Math.sin(b + 2.5) * 5 - 1, c.y + Math.cos(b * 0.8 + 1) * 6 - 1, 2, 2);
     }
   });
   for (const p of pedras) {                                         // pedras
@@ -1738,6 +1902,10 @@ function desenharHUD() {
       ctx.fillStyle = '#ffd94d';
       for (const pc of pecas) ctx.fillRect(rx + pc.x * sx - 1, ry + pc.y * sy - 1, 3, 3);
     }
+    if (Math.floor(G.t * 5) % 2 === 0) {
+      ctx.fillStyle = '#c86a2e';
+      for (const p of pragas) ctx.fillRect(rx + p.c.x * sx - 1, ry + p.c.y * sy - 1, 3, 3);
+    }
     if (Math.floor(G.t * 6) % 2 === 0) {
       ctx.fillStyle = '#ff5030';
       for (const f of fogos) ctx.fillRect(rx + f.c.x * sx - 1, ry + f.c.y * sy - 1, 3, 3);
@@ -1747,6 +1915,23 @@ function desenharHUD() {
     ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(jx, jy);
     ctx.lineTo(jx + Math.cos(jog.ang) * 7, jy + Math.sin(jog.ang) * 7); ctx.stroke();
+  }
+
+  if (G.fase === 'colheita' || G.fase === 'plantio') {              // ticker da bolsa
+    const tx = W - 158, ty2 = 170;
+    ctx.fillStyle = 'rgba(8,14,8,.8)'; ctx.fillRect(tx, ty2, 146, 48);
+    ctx.strokeStyle = '#3c4a30'; ctx.lineWidth = 2; ctx.strokeRect(tx, ty2, 146, 48);
+    ctx.font = '700 12px "Courier New", monospace';
+    ctx.fillStyle = '#eef2e0';
+    ctx.fillText('CANA11  ' + $(G.bolsa.preco), tx + 8, ty2 + 15);
+    const vB = G.bolsa.var;
+    ctx.fillStyle = vB >= 0 ? '#7cd85a' : '#ff7a5e';
+    ctx.font = '700 11px "Courier New", monospace';
+    ctx.fillText((vB >= 0 ? '▲ +' : '▼ ') + Math.round(vB * 100) + '% hoje', tx + 8, ty2 + 30);
+    ctx.fillStyle = G.bolsa.cotas > 0 ? '#ffd94d' : '#77826a';
+    ctx.fillText(G.bolsa.cotas > 0
+      ? '💼 ' + G.bolsa.cotas + '× = ' + $(bolsaValor())
+      : '💼 sem posição', tx + 8, ty2 + 44);
   }
 
   { // combo / turbo
@@ -1795,8 +1980,16 @@ function desenharHUD() {
       chip(bx, by, bw, bh, '🚒 BOMBEIRO  4', $(CFG.PRECO_BOMBEIRO) + ' apaga tudo',
            G.grana >= CFG.PRECO_BOMBEIRO, bombeiro); by -= 42;
     }
+    chip(bx, by, bw, bh, '🧪 DEFENSIVO  5',
+         (G.fase === 'plantio' ? 'trata a área · ' : 'cura e protege · ') + $(CFG.DEFENSIVO_CUSTO),
+         G.grana >= CFG.DEFENSIVO_CUSTO, aplicarDefensivo); by -= 42;
+    if (G.bolsa.cotas > 0) {
+      chip(bx, by, bw, bh, '📉 BOLSA  B', 'resgatar tudo (−10%)', true, resgatarBolsa); by -= 42;
+    }
     chip(bx, by, bw, bh, '📦 VENDER  3', 'drone, frete −20%', jog.cargaUn > 0, venderDrone); by -= 42;
-    chip(bx, by, bw, bh, '🔧 CONSERTO  2', $((100 - jog.integ) * CFG.PRECO_REPARO), jog.integ < 99.5, consertar); by -= 42;
+    if (G.fase === 'colheita') {
+      chip(bx, by, bw, bh, '🔧 CONSERTO  2', $((100 - jog.integ) * CFG.PRECO_REPARO), jog.integ < 99.5, consertar); by -= 42;
+    }
     const descUsina = pertoDaUsina();
     chip(bx, by, bw, bh, '⛽ DIESEL  1',
          $((uv('tanque') - jog.comb) * CFG.PRECO_LITRO * (descUsina ? 0.5 : 1)) + (descUsina ? ' 🏭−50%' : ''),
@@ -1861,7 +2054,7 @@ function desenharMenu() {
     'Colha, venda e cumpra a META até as 22:00 — ou o contrato acaba.',
     'Usina paga 100% (e diesel pela metade!) · drone vende com −20%.',
     'Combo x4 = TURBO com corte +50% · raios queimam · capivara multa.',
-    'Contrato do dia 📜, FRENESI ⚡ no mercado e peças ⚙ pela pista.',
+    'Contratos 📜, FRENESI ⚡, peças ⚙, BROCA 🐛 e bolsa CANA11 📈.',
     'Entre um dia e outro: OFICINA de upgrades e cota de PLANTIO.',
   ];
   li.forEach((l, i) => ctx.fillText(l, W / 2, y + 206 + i * 21));
@@ -1878,34 +2071,77 @@ function desenharMenu() {
 
 function desenharOficina() {
   ctx.fillStyle = 'rgba(8,12,6,.6)'; ctx.fillRect(0, 0, W, H);
-  const { x, y } = painel(700, 440);
+  const { x, y } = painel(720, 492);
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffd94d'; ctx.font = '700 26px "Courier New", monospace';
-  ctx.fillText('🔩 OFICINA — melhorias permanentes', W / 2, y + 42);
+  ctx.fillStyle = '#ffd94d'; ctx.font = '700 24px "Courier New", monospace';
+  ctx.fillText('🔩 OFICINA & INVESTIMENTOS', W / 2, y + 36);
   ctx.textAlign = 'left';
 
   const chaves = ['motor', 'esteiras', 'cacamba', 'tanque'];
   chaves.forEach((k, i) => {
-    const u = CFG.UPG[k], nv = nivel[k], ly = y + 80 + i * 72;
-    ctx.fillStyle = '#eef2e0'; ctx.font = '700 17px "Courier New", monospace';
-    ctx.fillText(u.nome, x + 34, ly + 18);
-    ctx.fillStyle = '#9fbf8a'; ctx.font = '12px "Courier New", monospace';
-    ctx.fillText(u.desc, x + 34, ly + 36);
-    ctx.font = '700 15px "Courier New", monospace'; ctx.fillStyle = '#ffd94d';
-    ctx.fillText('●'.repeat(nv) + '○'.repeat(3 - nv), x + 220, ly + 24);
-    ctx.fillStyle = '#cfe0b8'; ctx.font = '13px "Courier New", monospace';
-    const atual = u.val[nv] + u.un;
+    const u = CFG.UPG[k], nv = nivel[k], ly = y + 58 + i * 62;
+    ctx.fillStyle = '#eef2e0'; ctx.font = '700 16px "Courier New", monospace';
+    ctx.fillText(u.nome, x + 30, ly + 16);
+    ctx.fillStyle = '#9fbf8a'; ctx.font = '11px "Courier New", monospace';
+    ctx.fillText(u.desc, x + 30, ly + 32);
+    ctx.font = '700 14px "Courier New", monospace'; ctx.fillStyle = '#ffd94d';
+    ctx.fillText('●'.repeat(nv) + '○'.repeat(3 - nv), x + 210, ly + 22);
+    ctx.fillStyle = '#cfe0b8'; ctx.font = '12px "Courier New", monospace';
     const prox = nv < 3 ? ' → ' + u.val[nv + 1] + u.un : '  (MÁX)';
-    ctx.fillText(atual + prox, x + 300, ly + 24);
+    ctx.fillText(u.val[nv] + u.un + prox, x + 292, ly + 22);
     if (nv < 3) {
       const p = u.precos[nv];
-      chip(x + 520, ly, 146, 40, 'COMPRAR ' + $(p), null, G.grana >= p, () => comprarUpg(k));
+      chip(x + 528, ly - 2, 160, 38, 'COMPRAR ' + $(p), null, G.grana >= p, () => comprarUpg(k));
     }
   });
 
+  const by = y + 316;                                   // pregão da CANA11
+  ctx.strokeStyle = '#3c4a30'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x + 22, by - 10); ctx.lineTo(x + 698, by - 10); ctx.stroke();
+  ctx.fillStyle = '#ffd94d'; ctx.font = '700 16px "Courier New", monospace';
+  ctx.fillText('📈 BOLSA — CANA11', x + 30, by + 12);
+  ctx.font = '700 22px "Courier New", monospace'; ctx.fillStyle = '#eef2e0';
+  ctx.fillText($(G.bolsa.preco), x + 30, by + 40);
+  const vB = G.bolsa.var;
+  ctx.font = '700 13px "Courier New", monospace';
+  ctx.fillStyle = vB >= 0 ? '#7cd85a' : '#ff7a5e';
+  ctx.fillText((vB >= 0 ? '▲ +' : '▼ ') + Math.round(vB * 100) + '% hoje', x + 30, by + 60);
+
+  { const hx = x + 190, hy = by - 2, hw = 154, hh = 64; // gráfico do histórico
+    ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(hx, hy, hw, hh);
+    ctx.strokeStyle = '#3c4a30'; ctx.strokeRect(hx, hy, hw, hh);
+    const h = G.bolsa.hist;
+    if (h.length > 1) {
+      const mn = Math.min(...h), mx = Math.max(...h), amp = Math.max(1, mx - mn);
+      ctx.strokeStyle = h[h.length - 1] >= h[0] ? '#7cd85a' : '#ff7a5e';
+      ctx.lineWidth = 2; ctx.beginPath();
+      h.forEach((p, i) => {
+        const px2 = hx + 5 + (hw - 10) * i / (h.length - 1);
+        const py2 = hy + hh - 6 - (hh - 12) * (p - mn) / amp;
+        i ? ctx.lineTo(px2, py2) : ctx.moveTo(px2, py2);
+      });
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = '#77826a'; ctx.font = '10px "Courier New", monospace';
+      ctx.fillText('histórico a partir do dia 2', hx + 10, hy + hh / 2 + 3);
+    }
+  }
+
+  ctx.fillStyle = '#cfe0b8'; ctx.font = '700 13px "Courier New", monospace';
+  ctx.fillText('💼 ' + G.bolsa.cotas + ' cota(s)', x + 364, by + 14);
+  ctx.fillStyle = '#ffd94d';
+  ctx.fillText('= ' + $(bolsaValor()), x + 364, by + 34);
+  ctx.fillStyle = '#9fbf8a'; ctx.font = '10px "Courier New", monospace';
+  ctx.fillText('não conta p/ meta', x + 364, by + 52);
+
+  chip(x + 528, by - 6, 78, 30, '+1', null, G.grana >= G.bolsa.preco, () => comprarCotas(1));
+  chip(x + 610, by - 6, 78, 30, '+5', null, G.grana >= G.bolsa.preco * 5, () => comprarCotas(5));
+  chip(x + 528, by + 28, 78, 30, '−1', null, G.bolsa.cotas >= 1, () => venderCotas(1));
+  chip(x + 610, by + 28, 78, 30, 'ZERAR', null, G.bolsa.cotas > 0, () => venderCotas(G.bolsa.cotas));
+
   ctx.fillStyle = '#ffd94d'; ctx.font = '700 20px "Courier New", monospace';
-  ctx.fillText('💰 ' + $(G.grana), x + 34, y + 404);
-  chip(x + 440, y + 376, 226, 44, 'IR PARA O PLANTIO → ⏎', 'cota: ' + G.metaPlantio + ' mudas', true, irPlantio);
+  ctx.fillText('💰 ' + $(G.grana), x + 30, y + 464);
+  chip(x + 458, y + 434, 232, 44, 'IR PARA O PLANTIO → ⏎', 'cota: ' + G.metaPlantio + ' mudas', true, irPlantio);
 }
 
 function desenharPausa() {
@@ -1921,7 +2157,7 @@ function desenharPausa() {
 
 function desenharAjuda() {
   ctx.fillStyle = 'rgba(8,12,6,.7)'; ctx.fillRect(0, 0, W, H);
-  const { x, y } = painel(640, 436);
+  const { x, y } = painel(660, 520);
   ctx.fillStyle = '#ffd94d'; ctx.font = '700 22px "Courier New", monospace';
   ctx.textAlign = 'center'; ctx.fillText('📖 MANUAL DO OPERADOR', W / 2, y + 40);
   ctx.textAlign = 'left';
@@ -1932,19 +2168,22 @@ function desenharAjuda() {
     '2 ................ conserto do motor ($' + CFG.PRECO_REPARO + '/pt)',
     '3 ................ vender carga via drone (frete −20%)',
     '4 ................ drone bombeiro ($' + CFG.PRECO_BOMBEIRO + ', apaga tudo)',
+    '5 ................ defensivo 🧪 ($' + CFG.DEFENSIVO_CUSTO + '): previne e cura a BROCA',
+    'B ................ resgate rápido da bolsa (taxa −10%)',
     'ESPAÇO / Q ....... plantar · alternar muda normal/premium',
     'P / M / H ........ pausa · som · este manual',
     '',
     'Zona amarela da usina: descarga com 100% do valor da carga.',
     'Combo x4 ativa o TURBO: 2x veloz, diesel 0 e corte +50%.',
-    'A máquina desgasta rodando — caixas de peças ⚙ ajudam de graça.',
-    'Contrato do dia 📜 paga bônus · FRENESI ⚡ dobra toda venda.',
-    'Chuva faz lama (esteiras boas sofrem menos) e apaga incêndios.',
-    'Capivaras moram perto das lagoas e dormem à noite. Água barra!',
+    'BROCA 🐛 infesta canas sem trato: broqueada vale metade e morre.',
+    'Trate no PLANTIO (área) ou cure na colheita com o defensivo.',
+    'BOLSA 📈: aplique lucro na oficina; sobe e desce todo dia.',
+    'Contrato 📜 paga bônus · FRENESI ⚡ dobra vendas · peças ⚙ grátis.',
+    'Chuva faz lama e apaga fogo · capivaras moram nas lagoas.',
   ];
-  li.forEach((l, i) => ctx.fillText(l, x + 40, y + 72 + i * 24));
+  li.forEach((l, i) => ctx.fillText(l, x + 40, y + 66 + i * 24));
   ctx.fillStyle = '#9fbf8a';
-  ctx.fillText('H para voltar', x + 40, y + 414);
+  ctx.fillText('H para voltar', x + 40, y + 494);
 }
 
 function desenharFim() {
@@ -1963,6 +2202,10 @@ function desenharFim() {
   ctx.fillText(motivos[G.fimMotivo] || '', W / 2, y + 92);
   ctx.font = '700 18px "Courier New", monospace'; ctx.fillStyle = '#cfe0b8';
   ctx.fillText('Dias completos: ' + (G.diasFinal || 0) + '   ·   Pico de caixa: ' + $(G.picoGrana || 0), W / 2, y + 138);
+  if (G.bolsa && G.bolsa.cotas > 0) {
+    ctx.font = '700 12px "Courier New", monospace'; ctx.fillStyle = '#9fbf8a';
+    ctx.fillText('📈 Ficaram na bolsa: ' + G.bolsa.cotas + ' cota(s) de CANA11 (' + $(bolsaValor()) + ')…', W / 2, y + 162);
+  }
   if (G.novoRec) {
     const p = 1 + Math.sin(G.t * 6) * 0.06;
     ctx.save(); ctx.translate(W / 2, y + 182); ctx.scale(p, p);
@@ -2027,6 +2270,8 @@ window.addEventListener('keydown', e => {
     case 'Digit2': if (G.fase === 'colheita' || G.fase === 'plantio') consertar(); break;
     case 'Digit3': if (G.fase === 'colheita' || G.fase === 'plantio') venderDrone(); break;
     case 'Digit4': if (G.fase === 'colheita') bombeiro(); break;
+    case 'Digit5': if (G.fase === 'colheita' || G.fase === 'plantio') aplicarDefensivo(); break;
+    case 'KeyB': if (G.fase === 'colheita' || G.fase === 'plantio') resgatarBolsa(); break;
     case 'KeyQ':
       if (G.fase === 'plantio') {
         G.mudaPremium = !G.mudaPremium;
@@ -2108,10 +2353,12 @@ requestAnimationFrame(loop);
 /* gancho de depuração/testes: __T no console (F12) */
 globalThis.__T = {
   CFG, G, jog, nivel, canas, pedras, capis, fogos, lamas, plantios, cortadas, cinzas,
-  pecas, rastros, passaros, ARVORES, LAGOAS,
+  pecas, rastros, passaros, ARVORES, LAGOAS, pragas, defensivos,
   api: { iniciarJogo, vender, venderDrone, abastecer, consertar, bombeiro, plantar,
          irPlantio, encerrarPlantio, caiRaio, acender, fim, sortearDia, novaCana,
-         comprarUpg, update, uv, localPt, render },
+         comprarUpg, update, uv, localPt, render,
+         infestar, lancarPraga, aplicarDefensivo, comprarCotas, venderCotas,
+         resgatarBolsa, bolsaValor },
   dpad,
 };
 </script>
