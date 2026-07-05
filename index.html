@@ -147,7 +147,8 @@ const CFG = {
   PRAGA_VALOR: 0.5,                  // cana broqueada vale metade
   BOLSA_PRECO_INI: 100, BOLSA_TAXA_RAPIDA: 0.10,
 
-  DIAS_CAMPANHA: 5,                  // a safra encerra após a 5ª colheita
+  DIAS_PADRAO: 2, DIAS_MAX: 5,        // ciclo de safra escolhido no início
+  CHAVE_DIAS: 'canaTycoon_dias',
   PLANTIO_MIN_POR_SEG: 8,            // plantio: 24h de jogo em 3 min reais
   GUINCHO: 60,                       // reboque até a Reforma Linear
   REFORMA_SIM_VEL: 120,              // min de oficina por segundo real (animação)
@@ -249,6 +250,7 @@ const G = {
   praga: { hoje: false, hora: 0, lancada: false },
   bolsa: { preco: 100, var: 0, cotas: 0, hist: [100] },
   nomeJogador: 'OPERADOR',
+  diasCampanha: 2,
   atrasoProxDia: 0,
   reforma: null,
   stats: { ganho: 0, gasto: 0, minTrab: 0, cortes: 0, prem: 0, capis: 0,
@@ -550,6 +552,51 @@ function fazerSprites() {
     SPR.usina = c; }
 }
 
+/* ═══════════════════════════════ avatares dos mecânicos (retratos) ═ */
+const AVA = [];
+function fazerAvatares() {
+  // paleta por índice de CFG.MECANICOS:
+  // 0 LEGAL · 1 GELADO · 2 ZÉ DA ANTA · 3 GORDUROSO · 4 PRATEADO
+  // 5 PORQUINHO · 6 MERCANTE DE AZUL · 7 EU SOU É TÉCNICO
+  const S = 3, N = 16;
+  const pele   = ['#e0a878','#cdb7c0','#c98a5a','#d69a68','#e6b98c','#f0c0a0','#c9975f','#d8a878'];
+  const cabelo = ['#5a3a1e','#8fd6e8','#3a2a18','#2a1c10','#c9c9c9','#e8a0b0','#3a2c1a','#4a3420'];
+  const macac  = ['#3f7d3a','#2f6d8f','#7a5a2a','#5a4a3a','#8a8a92','#c98ab0','#2a4a9a','#3a5a4a'];
+  for (let i = 0; i < 8; i++) {
+    const [c, cc] = offscreen(N * S, N * S);
+    const P = (x, y, w, h, cor) => { cc.fillStyle = cor; cc.fillRect(x*S, y*S, w*S, h*S); };
+    P(0, 0, N, N, '#12180d');                                  // fundo
+    P(1, 1, N-2, N-2, ['#243a52','#2e4a6a','#3a2e1a','#2a2418','#3a3e44','#4a2a44','#1e356a','#243a44'][i]);
+    // ombros / macacão
+    P(2, 13, 12, 3, macac[i]); P(2, 15, 12, 1, '#10160c');
+    P(6, 13, 4, 2, '#20301c');                                 // gola
+    // rosto
+    P(4, 4, 8, 9, pele[i]); P(4, 4, 8, 1, '#00000022');
+    P(3, 6, 1, 4, pele[i]); P(12, 6, 1, 4, pele[i]);           // orelhas
+    // cabelo (estilos diferentes)
+    if (i === 3 || i === 5) { P(4, 3, 8, 2, cabelo[i]); }      // careca/baixo
+    else if (i === 7) { P(4, 2, 8, 3, cabelo[i]); P(3, 3, 1, 3, cabelo[i]); P(12, 3, 1, 3, cabelo[i]); }
+    else { P(4, 2, 8, 3, cabelo[i]); P(3, 3, 1, 4, cabelo[i]); P(12, 3, 1, 4, cabelo[i]); P(4, 4, 2, 1, cabelo[i]); }
+    // olhos
+    P(6, 7, 1, 2, '#1a1a1a'); P(9, 7, 1, 2, '#1a1a1a');
+    // detalhes por personagem
+    if (i === 1) { P(4, 4, 8, 2, 'rgba(140,214,232,.35)'); }   // GELADO: tez fria
+    if (i === 2) { P(6, 11, 4, 2, '#3a2a18'); P(6, 10, 4, 1, '#4a3420'); } // ZÉ: bigodão
+    if (i === 3) { P(5, 10, 6, 3, '#2a1c10'); P(5, 12, 6, 1, '#1a120a'); P(7, 9, 2, 1, '#3a2a18'); } // GORDUROSO: barba
+    if (i === 4) { P(3, 3, 10, 1, '#e8e8e8'); P(4, 4, 8, 1, 'rgba(255,255,255,.25)'); } // PRATEADO: brilho
+    if (i === 5) { P(6, 10, 4, 2, '#e0a0a0'); P(6, 9, 1, 1, '#1a1a1a'); P(9, 9, 1, 1, '#1a1a1a'); } // PORQUINHO: focinho
+    if (i === 6) { P(5, 1, 6, 2, '#1e356a'); P(4, 2, 8, 1, '#2a4a9a'); P(6, 12, 4, 1, '#f0c814'); } // MERCANTE: boné+gravata
+    if (i === 7) { P(5, 6, 3, 3, 'rgba(180,220,255,.5)'); P(8, 6, 3, 3, 'rgba(180,220,255,.5)'); // óculos
+                   P(5, 7, 6, 1, '#1a1a1a'); P(7, 7, 2, 1, '#1a1a1a');
+                   P(10, 13, 2, 2, '#f0c814'); }               // crachá
+    // capacete de segurança para 0 e 4
+    if (i === 0 || i === 4) { P(4, 1, 8, 2, '#f0c814'); P(3, 2, 10, 1, '#c79f08'); P(7, 1, 2, 1, '#fff3b0'); }
+    // boca neutra
+    P(7, 11, 2, 1, '#7a4a3a');
+    AVA.push(c);
+  }
+}
+
 /* ══════════════════════════════════════════ chão do mapa (1x) ═════ */
 let CHAO = null;
 function fazerChao() {
@@ -809,6 +856,8 @@ function iniciarJogo() {
   const inp = document.getElementById('nome');
   G.nomeJogador = (((inp && inp.value) || '').trim().toUpperCase().slice(0, 12)) || 'OPERADOR';
   try { localStorage.setItem(CFG.CHAVE_NOME, G.nomeJogador); } catch (e) {}
+  G.diasCampanha = clamp(G.diasCampanha || CFG.DIAS_PADRAO, 1, CFG.DIAS_MAX);
+  try { localStorage.setItem(CFG.CHAVE_DIAS, G.diasCampanha); } catch (e) {}
   G.dia = 1; G.grana = CFG.GRANA_INICIAL; G.picoGrana = CFG.GRANA_INICIAL; G.novoRec = false;
   G.stats = { ganho: 0, gasto: 0, minTrab: 0, cortes: 0, prem: 0, capis: 0,
               investido: 0, retirado: 0, mecanicos: 0 };
@@ -846,7 +895,7 @@ function salvarRanking(motivo) {
 function fimVitoria() {
   if (G.fase === 'fim') return;
   G.fase = 'fim'; G.fimMotivo = 'vitoria'; G.fimT = 0;
-  G.diasFinal = CFG.DIAS_CAMPANHA;
+  G.diasFinal = G.diasCampanha;
   if (G.diasFinal > G.recDias) {
     G.recDias = G.diasFinal; G.novoRec = true;
     localStorage.setItem(CFG.CHAVE_REC_DIAS, G.recDias);
@@ -1008,7 +1057,7 @@ function atualizarReforma(dt) {
     if (R.volta === 'colheita' && G.hora >= CFG.HORA_FIM && !G.fechou) {
       G.fechou = true;
       if (G.vendidoHoje >= G.meta) {
-        if (G.dia >= CFG.DIAS_CAMPANHA) { fimVitoria(); return; }
+        if (G.dia >= G.diasCampanha) { fimVitoria(); return; }
         R.motivo = 'noite';
         toast('✅ Meta batida — os reparos seguem pela madrugada', 3);
       } else { fim('meta'); return; }
@@ -1108,7 +1157,7 @@ function relogio(dt) {
       toast('📜 CONTRATO CUMPRIDO (nenhuma capivara ferida)! +' + $(ct.bonus), 3);
     }
     if (G.vendidoHoje >= G.meta) {
-      if (G.dia >= CFG.DIAS_CAMPANHA) { fimVitoria(); return; }
+      if (G.dia >= G.diasCampanha) { fimVitoria(); return; }
       entrarReforma('noite');
       toast('✅ META BATIDA! Passando na REFORMA LINEAR antes do plantio', 3);
       SFX.recorde();
@@ -2372,7 +2421,7 @@ function desenharMenu() {
   ctx.font = '700 44px "Courier New", monospace';
   ctx.fillText('🚜 CANA TYCOON', W / 2, y + 56);
   ctx.fillStyle = '#9fbf8a'; ctx.font = '700 12px "Courier New", monospace';
-  ctx.fillText('SIMULADOR DE SAFRA · CAMPANHA DE ' + CFG.DIAS_CAMPANHA + ' DIAS', W / 2, y + 78);
+  ctx.fillText('SIMULADOR DE SAFRA · CAMPANHA DE ' + G.diasCampanha + ' DIA' + (G.diasCampanha > 1 ? 'S' : ''), W / 2, y + 78);
   ctx.fillStyle = '#77826a'; ctx.font = '10px "Courier New", monospace';
   ctx.fillText('(digite seu nome no campo acima)', W / 2, y + 122);
 
@@ -2387,7 +2436,7 @@ function desenharMenu() {
     'Usina paga 100% (e diesel pela metade!) · drone vende com −20%.',
     'Combo x4 = TURBO com corte +50% · raios queimam · capivara multa.',
     'Sistemas separados 🔧: quebrou no campo? REFORMA LINEAR!',
-    'Contratos 📜, FRENESI ⚡, BROCA 🐛, bolsa 📈. Campanha de ' + CFG.DIAS_CAMPANHA + ' dias.',
+    'Contratos 📜, FRENESI ⚡, BROCA 🐛, bolsa 📈. Você escolhe os dias!',
   ];
   li.forEach((l, i) => ctx.fillText(l, W / 2, y + 206 + i * 21));
 
@@ -2516,14 +2565,18 @@ function desenharReforma() {
     const mi = R.mec[k];
     if (mi >= 0) {
       const M = CFG.MECANICOS[mi], est = estimativa(k);
-      ctx.font = '700 13px "Courier New", monospace'; ctx.fillStyle = '#ffd94d';
-      ctx.fillText('👷 ' + M[0], lx + 400, ly + 20);
-      ctx.font = '10px "Courier New", monospace'; ctx.fillStyle = '#c2ceac';
-      ctx.fillText(estrelas(M[1]) + '  $' + M[2] + '/h — "' + M[3] + '"', lx + 400, ly + 36);
-      if (est && est.min > 0 && !R.rodando) {
-        ctx.fillStyle = '#9fbf8a';
-        ctx.fillText('~' + fmtH(est.min) + ' · ' + $(est.custo), lx + 400, ly + 52);
+      if (AVA[mi]) {
+        ctx.drawImage(AVA[mi], lx + 398, ly + 8, 48, 48);
+        ctx.strokeStyle = '#3c4a30'; ctx.lineWidth = 1;
+        ctx.strokeRect(lx + 398, ly + 8, 48, 48);
       }
+      ctx.font = '700 13px "Courier New", monospace'; ctx.fillStyle = '#ffd94d';
+      ctx.fillText(M[0], lx + 454, ly + 20);
+      ctx.font = '10px "Courier New", monospace'; ctx.fillStyle = '#c2ceac';
+      ctx.fillText(estrelas(M[1]) + '  $' + M[2] + '/h', lx + 454, ly + 34);
+      ctx.fillStyle = '#9fbf8a';
+      ctx.fillText((est && est.min > 0 && !R.rodando) ? '~' + fmtH(est.min) + ' · ' + $(est.custo)
+                                                       : '"' + M[3] + '"', lx + 454, ly + 48);
     } else if (dano > 0.5) {
       ctx.font = '11px "Courier New", monospace'; ctx.fillStyle = '#77826a';
       ctx.fillText('sem mecânico designado', lx + 400, ly + 30);
@@ -2678,7 +2731,8 @@ const AJUDA_PAGS = [
     'Reforma que varar a madrugada ATRASA o início do dia seguinte.',
   ]},
   { t: '🏁 CAMPANHA & RANKING', l: [
-    'A safra é uma CAMPANHA de ' + CFG.DIAS_CAMPANHA + ' dias. Bateu a meta do 5º dia,',
+    'A safra é a CAMPANHA que você escolheu (1 a 5 dias). Bata a',
+    'meta do último dia para VENCER a temporada.',
     'você VENCE e vê o relatório completo da temporada.',
     'Todo fim de jogo entra no RANKING (salvo no navegador),',
     'ordenado por vitória, dias completos e patrimônio final.',
@@ -2756,7 +2810,7 @@ function desenharFim() {
   ctx.fillText(motivos[G.fimMotivo] || '', W / 2, y + 64);
   ctx.fillStyle = '#9fbf8a'; ctx.font = '700 12px "Courier New", monospace';
   ctx.fillText('Operador: ' + (G.nomeJogador || 'OPERADOR') + '  ·  ' +
-               (G.diasFinal || 0) + '/' + CFG.DIAS_CAMPANHA + ' dias', W / 2, y + 84);
+               (G.diasFinal || 0) + '/' + G.diasCampanha + ' dias', W / 2, y + 84);
 
   const st = G.stats, patr = Math.floor(G.grana + bolsaValor());   // painel de stats
   ctx.textAlign = 'left';
@@ -2963,6 +3017,7 @@ function loop(ts) {
 }
 
 fazerSprites();
+fazerAvatares();
 fazerChao();
 [LUZ, luzc] = offscreen(W, H);
 { const [v, vc] = offscreen(W, H);
