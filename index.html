@@ -16,7 +16,11 @@
 <style>
   :root { --terra:#3d2b1f; --painel:#1c2416; --verde:#59aa48; --amarelo:#f0c814; }
   * { margin:0; padding:0; box-sizing:border-box; }
-  html,body { height:100%; }
+  html,body {
+    height:100%;
+    -webkit-user-select:none; -moz-user-select:none; -ms-user-select:none; user-select:none;
+    -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent;
+  }
   body {
     background:
       radial-gradient(1200px 600px at 50% -10%, #24371c 0%, transparent 60%),
@@ -42,6 +46,11 @@
     width:100%; height:auto; display:block; border-radius:4px;
     image-rendering:pixelated; image-rendering:crisp-edges;
     cursor:crosshair;
+    touch-action:none;                       /* nada de rolar/zoom/duplo-toque no jogo */
+    -webkit-user-select:none; -moz-user-select:none; -ms-user-select:none; user-select:none;
+    -webkit-touch-callout:none;              /* sem menu de seleção ao segurar (iOS) */
+    -webkit-tap-highlight-color:transparent; /* sem flash cinza ao tocar */
+    -webkit-user-drag:none;
   }
   #frame::before {
     content:''; position:absolute; inset:0; border-radius:4px; pointer-events:none; z-index:2;
@@ -61,6 +70,7 @@
     background:#0d130a; border:2px solid #f0c814; border-radius:4px; outline:none;
     color:#ffd94d; font:700 16px "Courier New",monospace;
     padding:6px 10px; width:200px; text-align:center; text-transform:uppercase;
+    -webkit-user-select:text; user-select:text; -webkit-touch-callout:default;
   }
   #frame:fullscreen {
     max-width:none; width:100%; height:100%;
@@ -95,6 +105,7 @@
     background:#060a05; color:#8fe388; border:2px solid #3d5228; border-radius:5px;
     font-family:"Courier New", monospace; font-size:12px; line-height:1.35;
     padding:8px; word-break:break-all; outline:none; margin-bottom:12px;
+    -webkit-user-select:text; user-select:text; -webkit-touch-callout:default;
   }
   .cx-row { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; }
   .cx-row button {
@@ -197,6 +208,9 @@ const CFG = {
 
   DIAS_PADRAO: 2, DIAS_MAX: 5,        // ciclo de safra escolhido no início
   ZOOM_MOBILE: 1.5,                  // câmera dá zoom no celular (tudo maior)
+  SURV_HP: 100, SURV_VEL: 178, SURV_IFRAME: 0.7, SURV_MAG: 74, SURV_MAXMOB: 190,
+  SURV_CRIT: 0.16, SURV_CRIT_MULT: 2.2,
+  CHAVE_SURV: 'canaTycoon_survRec',
   CHAVE_DIAS: 'canaTycoon_dias',
   PLANTIO_MIN_POR_SEG: 8,            // plantio: 24h de jogo em 3 min reais
   GUINCHO: 60,                       // reboque até a Reforma Linear
@@ -295,6 +309,8 @@ function lerCodigo(str) {
 /* ══════════════════════════════════════════════════════ canvas ═════ */
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
+canvas.addEventListener('contextmenu', e => e.preventDefault());   // sem menu ao segurar
+canvas.addEventListener('selectstart', e => e.preventDefault());   // sem seleção de texto
 ctx.imageSmoothingEnabled = false;
 
 function offscreen(w, h) {
@@ -1363,6 +1379,7 @@ function update(dt) {
     if (rastros[i].t > 7) rastros.splice(i, 1);
   }
 
+  if (G.fase === 'survivor') { atualizarSurvivor(dt); motorSom(jog.movendo ? 0.5 : 0, jog.movendo); chuvaSom(false); return; }
   if (G.fase === 'fim') { G.fimT += dt; motorSom(0, false); chuvaSom(false); return; }
   if (G.fase === 'reforma') { atualizarReforma(dt); motorSom(0, false); chuvaSom(false); return; }
   if (G.fase === 'menu' || G.fase === 'oficina') { motorSom(0, false); chuvaSom(false); return; }
@@ -2105,8 +2122,723 @@ function tintaDia(h) {                            // cor do dia (amanhecer/entar
   return null;
 }
 
+/* ═══════════════════════════════════ MODO PRAGA SEM FIM (survivor) ═
+   Estilo "vampire survivors" rural: a colhedora enfrenta ondas infinitas
+   de pragas, com armas que atacam sozinhas, cana como XP, níveis e
+   melhorias. Totalmente separado das fases de fazenda. */
+const inimigos = [], projeteis = [], orbes = [], zonasSurv = [], dmgs = [], aneis = [];
+let joySurv = null;
+
+// ── juice: números de dano, anéis de impacto, flash de tela ──────────
+function numDano(x, y, val, crit) {
+  if (dmgs.length > 48) dmgs.shift();
+  dmgs.push({ x: x + rand(-6, 6), y, txt: '' + val, t: 0, crit });
+}
+function anel(x, y, r0, r1, vida, cor, lw) {
+  if (aneis.length > 44) aneis.shift();
+  aneis.push({ x, y, r0, r1, t: 0, vida, cor, lw: lw || 3 });
+}
+function flashTela(rgb, f) { const s = G.surv; if (!s) return; s.flash = Math.max(s.flash || 0, f); s.flashCor = rgb; }
+function atualizarDmgs(dt) { for (let i = dmgs.length - 1; i >= 0; i--) { dmgs[i].t += dt; if (dmgs[i].t > 0.7) dmgs.splice(i, 1); } }
+function atualizarAneis(dt) { for (let i = aneis.length - 1; i >= 0; i--) { aneis[i].t += dt; if (aneis[i].t >= aneis[i].vida) aneis.splice(i, 1); } }                              // joystick virtual (mobile)
+
+const SURV_MOBS = [
+  { id: 'broca',     hp: 6,  vel: 66, r: 11, dano: 6,  xp: 1, cor: '#c07a3a', desde: 0 },
+  { id: 'capivara',  hp: 22, vel: 52, r: 16, dano: 10, xp: 3, cor: '#b0895f', desde: 8 },
+  { id: 'gafanhoto', hp: 4,  vel: 96, r: 9,  dano: 5,  xp: 1, cor: '#8fbf3a', desde: 25, erratico: true },
+  { id: 'javali',    hp: 64, vel: 42, r: 21, dano: 18, xp: 6, cor: '#7a5f48', desde: 55, tanky: true },
+];
+function ARMA(id) { return SURV_ARMAS.find(a => a.id === id); }
+function danoMul() { return 1 + (G.surv.up.dano || 0) * 0.15; }
+function areaMul() { return 1 + (G.surv.up.area || 0) * 0.12; }
+
+function inimigoMaisPerto(x, y, maxD, pular) {
+  let melhor = null, md = (maxD || 9999) ** 2, n = 0;
+  for (const e of inimigos) {
+    const d = dist2(x, y, e.x, e.y);
+    if (d < md) { if (pular && n++ < pular) continue; md = d; melhor = e; }
+  }
+  return melhor;
+}
+function inimigoAleatorioPerto(x, y, maxD) {
+  const perto = inimigos.filter(e => dist2(x, y, e.x, e.y) < maxD * maxD);
+  return perto.length ? escolha(perto) : null;
+}
+function bater(e, dano, kx, ky, silent) {
+  const crit = Math.random() < CFG.SURV_CRIT;
+  if (crit) dano *= CFG.SURV_CRIT_MULT;
+  e.hp -= dano; e.flash = 0.09; e.hitT = 0.12;             // hitT = squash ao apanhar
+  if (kx || ky) { e.kx += kx; e.ky += ky; }
+  const nP = silent ? 1 : (crit ? 7 : 3);
+  if (!silent || Math.random() < 0.4)
+    part(e.x, e.y, { vx: [-80, 80], vy: [-90, 25], vida: [.15, .42], tam: [2, crit ? 5 : 3],
+      cores: crit ? ['#fff', '#ffd94d', '#ff9a3e'] : ['#fff3b0', '#ffd94d'], grav: 150, n: nP });
+  if (!silent) numDano(e.x, e.y - e.r, Math.round(dano), crit);
+  if (crit) anel(e.x, e.y, e.r * 0.4, e.r * 1.9, 0.28, '#ffd94d', 3);
+}
+
+const SURV_ARMAS = [
+  { id: 'laminas', nome: 'Lâminas Rotativas', icone: '🌀', max: 8,
+    desc: n => n === 0 ? 'corta tudo ao seu redor' : 'raio e dano maiores',
+    cd: n => 0.6,
+    fogo: w => {
+      const n = w.nivel, R = (56 + n * 11) * areaMul(), d = (4 + n * 2.2) * danoMul();
+      for (const e of inimigos) if (dist2(jog.x, jog.y, e.x, e.y) < R * R) {
+        let dx = e.x - jog.x, dy = e.y - jog.y, m = Math.hypot(dx, dy) || 1;
+        bater(e, d, dx / m * 130, dy / m * 130, true);
+      }
+      zonasSurv.push({ x: jog.x, y: jog.y, r: R, t: 0, vida: 0.24, cor: '#bfe89a', anel: true });
+    } },
+  { id: 'defensivo', nome: 'Jato de Defensivo', icone: '🧪', max: 8,
+    desc: n => n === 0 ? 'dispara na praga mais próxima' : '+dano, +projéteis',
+    cd: n => 0.98 - n * 0.05,
+    fogo: w => {
+      const n = w.nivel, alvo = inimigoMaisPerto(jog.x, jog.y, 1000);
+      let ax = alvo ? alvo.x - jog.x : G.surv.face.x, ay = alvo ? alvo.y - jog.y : G.surv.face.y;
+      const m = Math.hypot(ax, ay) || 1; ax /= m; ay /= m;
+      anel(jog.x + ax * 20, jog.y + ay * 20, 3, 17, 0.16, '#9fe7c0', 3);
+      const qtd = 1 + Math.floor(n / 2);
+      for (let k = 0; k < qtd; k++) {
+        const a = Math.atan2(ay, ax) + (k - (qtd - 1) / 2) * 0.16;
+        projeteis.push({ x: jog.x, y: jog.y, vx: Math.cos(a) * 380, vy: Math.sin(a) * 380,
+          dano: (6 + n * 3) * danoMul(), vida: 1.1, r: 9 * areaMul(),
+          pierce: Math.floor(n / 3), hits: new Set(), cor: '#9fe7c0', tam: 7, tipo: 'spray' });
+      }
+    } },
+  { id: 'faca', nome: 'Facão Giratório', icone: '🔪', max: 8,
+    desc: n => n === 0 ? 'lâminas orbitando você' : '+lâminas, +dano',
+    tick: (w, dt) => {
+      const n = w.nivel, qtd = 1 + Math.floor((n + 1) / 2), R = (44 + n * 6) * areaMul(), d = (5 + n * 2) * danoMul();
+      w.ang = (w.ang || 0) + dt * 3.1; w._blades = [];
+      for (let k = 0; k < qtd; k++) {
+        const a = w.ang + k * 6.2832 / qtd, bx = jog.x + Math.cos(a) * R, by = jog.y + Math.sin(a) * R;
+        w._blades.push([bx, by, a]);
+        for (const e of inimigos)
+          if (dist2(bx, by, e.x, e.y) < (15 + e.r) ** 2 && (!e._facaCd || e._facaCd <= 0)) {
+            bater(e, d, Math.cos(a) * 150, Math.sin(a) * 150); e._facaCd = 0.28;
+          }
+      }
+    } },
+  { id: 'drone', nome: 'Drone Pulverizador', icone: '🚁', max: 8,
+    desc: n => n === 0 ? 'solta nuvens tóxicas' : '+área, +frequência',
+    cd: n => 2.5 - n * 0.16,
+    fogo: w => {
+      const n = w.nivel, alvo = inimigoAleatorioPerto(jog.x, jog.y, 620) ||
+        { x: jog.x + rand(-220, 220), y: jog.y + rand(-220, 220) };
+      zonasSurv.push({ x: alvo.x, y: alvo.y, r: (58 + n * 10) * areaMul(), t: 0, vida: 2.4,
+        tick: 0, dano: (3 + n * 1.6) * danoMul(), cor: '#7fd4a8', nuvem: true });
+      anel(alvo.x, alvo.y, 6, (58 + n * 10) * areaMul(), 0.35, '#7fd4a8', 3);
+      droneAnim && droneAnim('🚁');
+    } },
+  { id: 'foice', nome: 'Foice Arremessada', icone: '⚙️', max: 8,
+    desc: n => n === 0 ? 'arremessa e perfura' : '+dano, +perfuração',
+    cd: n => 1.5 - n * 0.08,
+    fogo: w => {
+      const n = w.nivel, qtd = 1 + Math.floor(n / 2);
+      anel(jog.x, jog.y, 3, 20, 0.18, '#cfd6dc', 3);
+      for (let k = 0; k < qtd; k++) {
+        const alvo = inimigoMaisPerto(jog.x, jog.y, 800, k);
+        const a = alvo ? Math.atan2(alvo.y - jog.y, alvo.x - jog.x) : rand(0, 6.28);
+        projeteis.push({ x: jog.x, y: jog.y, vx: Math.cos(a) * 310, vy: Math.sin(a) * 310,
+          dano: (9 + n * 4) * danoMul(), vida: 1.7, r: 12 * areaMul(),
+          pierce: 2 + n, hits: new Set(), cor: '#cfd6dc', tam: 10, tipo: 'foice', spin: 0 });
+      }
+    } },
+];
+const SURV_PASSIVAS = [
+  { id: 'motor',     nome: 'Motor Turbinado',   icone: '🏎️', max: 6, desc: () => '+12% velocidade' },
+  { id: 'dano',      nome: 'Lâminas Afiadas',   icone: '🗡️', max: 8, desc: () => '+15% de dano' },
+  { id: 'cadencia',  nome: 'Óleo Lubrificante', icone: '🛢️', max: 6, desc: () => '+10% de cadência' },
+  { id: 'area',      nome: 'Alcance Ampliado',  icone: '📡', max: 6, desc: () => '+12% de área' },
+  { id: 'iman',      nome: 'Ímã de Cana',       icone: '🧲', max: 6, desc: () => '+35% de coleta' },
+  { id: 'blindagem', nome: 'Blindagem',         icone: '🛡️', max: 6, desc: () => '+20 vida máxima' },
+  { id: 'recup',     nome: 'Kit de Reparo',     icone: '❤️', max: 5, desc: () => '+0.6 vida/seg' },
+];
+
+function iniciarSurvivor() {
+  if (typeof document !== 'undefined') { const cb = document.getElementById('codigoBox'); if (cb) cb.style.display = 'none'; }
+  const inp = document.getElementById('nome');
+  if (inp) { G.nomeJogador = ((inp.value || '').trim().toUpperCase().slice(0, 12)) || 'OPERADOR';
+             try { localStorage.setItem(CFG.CHAVE_NOME, G.nomeJogador); } catch (e) {} }
+  G.duelo = null; _semRng = null; G.fase = 'survivor';
+  inimigos.length = 0; projeteis.length = 0; orbes.length = 0; zonasSurv.length = 0;
+  dmgs.length = 0; aneis.length = 0; joySurv = null;
+  jog.x = MW / 2; jog.y = MH / 2; jog.ang = 0; jog.vel = 0; jog.turbo = 0; jog.movendo = false;
+  jog.comp = { hidraulico: 100, rodante: 100, corte: 100, motor: 100 }; jog.integ = 100; jog.seco = false;
+  let rec = 0; try { rec = Number(localStorage.getItem(CFG.CHAVE_SURV)) || 0; } catch (e) {}
+  G.surv = {
+    t: 0, hp: CFG.SURV_HP, hpMax: CFG.SURV_HP, nivel: 1, xp: 0, xpProx: 6,
+    mortos: 0, canaColetada: 0, invT: 0, fim: false, fimT: 0,
+    proxSpawn: 0, proxBoss: 55, face: { x: 1, y: 0 },
+    armas: [{ id: 'laminas', nivel: 1, t: 0.4 }],
+    up: { motor: 0, dano: 0, cadencia: 0, area: 0, iman: 0, blindagem: 0, recup: 0 },
+    escolhendo: null, filaEscolha: 0, recorde: rec, novoRec: false,
+    flash: 0, flashCor: '255,255,255', hitStop: 0, _blip: 0,
+  };
+  G.pausa = false;
+  toast('🔥 PRAGA SEM FIM! Segure o máximo que puder — mova e deixe as armas agirem!', 4.5);
+}
+
+function moverSurv(dt) {
+  const s = G.surv;
+  let dx = (kb.dir ? 1 : 0) - (kb.esq ? 1 : 0);
+  let dy = (kb.re ? 1 : 0) - (kb.fwd ? 1 : 0);
+  if (joySurv && joySurv.ativo) { dx = joySurv.dx; dy = joySurv.dy; }
+  const m = Math.hypot(dx, dy);
+  const vel = CFG.SURV_VEL * (1 + s.up.motor * 0.12);
+  if (m > 0.15) {
+    dx /= (m < 1 ? 1 : m); dy /= (m < 1 ? 1 : m);
+    const mm = Math.hypot(dx, dy) || 1;
+    jog.x = clamp(jog.x + (dx / mm) * vel * dt, 40, MW - 40);
+    jog.y = clamp(jog.y + (dy / mm) * vel * dt, 40, MH - 40);
+    jog.ang = Math.atan2(dy, dx);
+    s.face.x = dx / mm; s.face.y = dy / mm;
+    jog.movendo = true; jog.frame += dt * 10;
+    if (Math.random() < dt * 7) rastros.push({ x: jog.x, y: jog.y, ang: jog.ang, t: 0 });
+  } else jog.movendo = false;
+}
+
+function criarInimigo(forc) {
+  const s = G.surv;
+  const pool = SURV_MOBS.filter(mb => s.t >= mb.desde);
+  const M = forc || escolha(pool.length ? pool : SURV_MOBS);
+  const ang = rand(0, 6.2832), Z = MOBILE ? CFG.ZOOM_MOBILE : 1;
+  const raio = Math.max(W, H) / 2 / Z + rand(70, 200);
+  const x = clamp(jog.x + Math.cos(ang) * raio, 20, MW - 20);
+  const y = clamp(jog.y + Math.sin(ang) * raio, 20, MH - 20);
+  const esc = 1 + s.t / 105;
+  inimigos.push({ tipo: M, x, y, hp: M.hp * esc, hpMax: M.hp * esc, vel: M.vel, r: M.r,
+    dano: M.dano, xp: M.xp, flash: 0, frame: rand(0, 9), kx: 0, ky: 0, faseW: rand(0, 6.28), boss: false });
+}
+function criarBoss() {
+  const s = G.surv, esc = 2.4 + s.t / 60;
+  const ang = rand(0, 6.2832), raio = Math.max(W, H) / 2 + 120;
+  inimigos.push({ tipo: SURV_MOBS[1], x: clamp(jog.x + Math.cos(ang) * raio, 20, MW - 20),
+    y: clamp(jog.y + Math.sin(ang) * raio, 20, MH - 20),
+    hp: 260 * esc, hpMax: 260 * esc, vel: 40, r: 34, dano: 26, xp: 40,
+    flash: 0, frame: 0, kx: 0, ky: 0, faseW: 0, boss: true });
+  toast('👑 UM JAVALÃO GIGANTE APARECEU!', 3.5); SFX.praga();
+}
+function spawnInimigo(dt) {
+  const s = G.surv;
+  s.proxSpawn -= dt;
+  if (s.proxSpawn <= 0 && inimigos.length < CFG.SURV_MAXMOB) {
+    s.proxSpawn = Math.max(0.09, 0.92 - s.t * 0.006);
+    const lote = 1 + Math.floor(s.t / 40);
+    for (let i = 0; i < lote; i++) criarInimigo();
+  }
+  if (s.t >= s.proxBoss) { s.proxBoss += 60; criarBoss(); }
+}
+function matarInimigo(e, i) {
+  const s = G.surv; s.mortos++;
+  const nq = e.boss ? 10 : 1;
+  for (let k = 0; k < nq; k++)
+    orbes.push({ x: e.x + rand(-e.r, e.r), y: e.y + rand(-e.r, e.r), val: e.boss ? 4 : e.xp,
+      vx: rand(-50, 50), vy: rand(-50, 50), t: 0 });
+  if (e.boss || Math.random() < 0.014)
+    orbes.push({ x: e.x, y: e.y, coracao: true, val: e.boss ? 40 : 18, vx: 0, vy: 0, t: 0 });
+  part(e.x, e.y, { vx: [-130, 130], vy: [-140, 70], vida: [.25, .6], tam: [2, e.boss ? 6 : 4],
+    cores: [e.tipo.cor, '#e8d8b0', '#8fbf3a', '#fff'], grav: 220, n: e.boss ? 34 : 12 });
+  anel(e.x, e.y, e.r * 0.5, e.r * (e.boss ? 4 : 2.4), e.boss ? 0.5 : 0.3, e.boss ? '#ffd94d' : '#e8e0c0', e.boss ? 5 : 3);
+  if (e.boss) { flashTela('255,244,208', 0.6); s.hitStop = Math.max(s.hitStop || 0, 0.12); tremer(0.3); }
+  inimigos.splice(i, 1);
+}
+function atualizarInimigos(dt) {
+  const s = G.surv;
+  for (let i = inimigos.length - 1; i >= 0; i--) {
+    const e = inimigos[i];
+    if (e.hp <= 0) { matarInimigo(e, i); continue; }
+    e.flash = Math.max(0, e.flash - dt);
+    if (e.hitT) e.hitT = Math.max(0, e.hitT - dt);
+    if (e._facaCd) e._facaCd -= dt;
+    e.kx *= 0.86; e.ky *= 0.86;
+    let dx = jog.x - e.x, dy = jog.y - e.y, d = Math.hypot(dx, dy) || 1; dx /= d; dy /= d;
+    const vel = e.vel * (1 + s.t / 240);
+    if (e.tipo.erratico) { e.faseW += dt * 6; dx += Math.cos(e.faseW) * 0.5; dy += Math.sin(e.faseW) * 0.5; }
+    e.x += dx * vel * dt + e.kx * dt; e.y += dy * vel * dt + e.ky * dt;
+    e.frame += dt * 8;
+    if (d < e.r + 15 && s.invT <= 0) {
+      s.hp -= e.dano * (1 + s.t / 320); s.invT = CFG.SURV_IFRAME;
+      tremer(0.26); SFX.colisao();
+      s.hitStop = Math.max(s.hitStop || 0, 0.05); flashTela('255,70,58', 0.5);
+      anel(jog.x, jog.y, 6, 42, 0.3, '#ff6a5e', 4);
+      jog.x = clamp(jog.x - dx * 18, 40, MW - 40); jog.y = clamp(jog.y - dy * 18, 40, MH - 40);
+      part(jog.x, jog.y, { vx: [-110, 110], vy: [-110, 50], vida: [.2, .45], tam: [2, 5],
+        cores: ['#ff5a4a', '#ffb03a', '#fff'], grav: 170, n: 14 });
+      if (s.hp <= 0) { s.hp = 0; fimSurvivor(); return; }
+    }
+  }
+}
+function atualizarArmasSurv(dt) {
+  const s = G.surv;
+  for (const w of s.armas) {
+    const def = ARMA(w.id); if (!def) continue;
+    if (def.cd) { w.t -= dt; if (w.t <= 0) { w.t = def.cd(w.nivel) / (1 + s.up.cadencia * 0.10); def.fogo(w); } }
+    if (def.tick) def.tick(w, dt);
+  }
+}
+function atualizarProjeteis(dt) {
+  for (let i = projeteis.length - 1; i >= 0; i--) {
+    const p = projeteis[i];
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vida -= dt;
+    if (p.spin != null) p.spin += dt * 13;
+    let morto = p.vida <= 0 || p.x < 0 || p.y < 0 || p.x > MW || p.y > MH;
+    if (!morto) for (const e of inimigos) {
+      if (p.hits.has(e)) continue;
+      if (dist2(p.x, p.y, e.x, e.y) < (p.r + e.r) ** 2) {
+        bater(e, p.dano, p.vx * 0.14, p.vy * 0.14); p.hits.add(e);
+        if (--p.pierce < 0) { morto = true; break; }
+      }
+    }
+    if (morto) projeteis.splice(i, 1);
+  }
+}
+function atualizarZonas(dt) {
+  for (let i = zonasSurv.length - 1; i >= 0; i--) {
+    const z = zonasSurv[i]; z.t += dt;
+    if (z.nuvem) {
+      z.tick -= dt;
+      if (z.tick <= 0) { z.tick = 0.34;
+        for (const e of inimigos) if (dist2(z.x, z.y, e.x, e.y) < z.r * z.r) bater(e, z.dano, 0, 0, true);
+      }
+    }
+    if (z.t >= z.vida) zonasSurv.splice(i, 1);
+  }
+}
+function ganharXP(v) {
+  const s = G.surv; s.xp += v; s.canaColetada += v;
+  while (s.xp >= s.xpProx) {
+    s.xp -= s.xpProx; s.nivel++;
+    s.xpProx = Math.round(6 + s.nivel * 4 + s.nivel * s.nivel * 0.5);
+    s.filaEscolha++;
+    anel(jog.x, jog.y, 12, 175, 0.55, '#ffd94d', 6);
+    flashTela('255,248,180', 0.5); tremer(0.14);
+    part(jog.x, jog.y, { vx: [-170, 170], vy: [-210, -30], vida: [.4, .9], tam: [2, 5],
+      cores: ['#ffd94d', '#fff', '#8fe36a'], grav: 280, n: 22 });
+  }
+  if (!s.escolhendo && s.filaEscolha > 0) abrirEscolha();
+}
+function atualizarOrbes(dt) {
+  const s = G.surv, magR = CFG.SURV_MAG * (1 + s.up.iman * 0.35);
+  for (let i = orbes.length - 1; i >= 0; i--) {
+    const o = orbes[i]; o.t += dt;
+    let dx = jog.x - o.x, dy = jog.y - o.y, d = Math.hypot(dx, dy) || 1;
+    if (d < magR) {
+      const pull = clamp((magR - d) / magR, 0, 1) * 620 + 130;
+      o.x += dx / d * pull * dt; o.y += dy / d * pull * dt;
+    } else { o.x += o.vx * dt; o.y += o.vy * dt; o.vx *= 0.9; o.vy *= 0.9; }
+    if (d < 22) {
+      if (o.coracao) { s.hp = Math.min(s.hpMax, s.hp + o.val);
+        flut(jog.x, jog.y - 30, '+' + o.val + '❤', '#ff8fa8');
+        anel(jog.x, jog.y, 4, 28, 0.25, '#ff8fa8', 3); }
+      else { ganharXP(o.val);
+        part(o.x, o.y, { vx: [-45, 45], vy: [-70, 0], vida: [.12, .3], tam: [1, 2],
+          cores: ['#b6f0a0', '#fff'], grav: 60, n: 2 });
+        if (G.t - (s._blip || 0) > 0.07) { s._blip = G.t; SFX.moeda(); } }
+      orbes.splice(i, 1);
+    }
+  }
+}
+function abrirEscolha() {
+  const s = G.surv; s.filaEscolha = Math.max(0, s.filaEscolha - 1);
+  const cand = [];
+  for (const w of s.armas) { const def = ARMA(w.id); if (w.nivel < def.max)
+    cand.push({ tipo: 'arma', id: w.id, nome: def.nome, icone: def.icone, desc: def.desc(w.nivel), nivel: w.nivel, nova: false }); }
+  if (s.armas.length < 5) for (const def of SURV_ARMAS) if (!s.armas.find(w => w.id === def.id))
+    cand.push({ tipo: 'arma', id: def.id, nome: def.nome, icone: def.icone, desc: def.desc(0), nivel: 0, nova: true });
+  for (const def of SURV_PASSIVAS) { const lv = s.up[def.id] || 0; if (lv < def.max)
+    cand.push({ tipo: 'passiva', id: def.id, nome: def.nome, icone: def.icone, desc: def.desc(lv), nivel: lv, nova: lv === 0 }); }
+  const ops = [];
+  while (ops.length < 3 && cand.length) ops.push(cand.splice(randi(0, cand.length - 1), 1)[0]);
+  while (ops.length < 3) ops.push({ tipo: 'cura', id: 'cura', nome: 'Remendo de Emergência', icone: '🩹', desc: 'recupera 30 de vida', nivel: 0, nova: false });
+  s.escolhendo = ops; SFX.recorde();
+}
+function escolherMelhoria(idx) {
+  const s = G.surv; if (!s.escolhendo || !s.escolhendo[idx]) return;
+  const op = s.escolhendo[idx];
+  if (op.tipo === 'arma') {
+    const w = s.armas.find(a => a.id === op.id);
+    if (w) w.nivel = Math.min(ARMA(op.id).max, w.nivel + 1);
+    else s.armas.push({ id: op.id, nivel: 1, t: 0.3, ang: 0 });
+  } else if (op.tipo === 'passiva') {
+    s.up[op.id] = (s.up[op.id] || 0) + 1;
+    if (op.id === 'blindagem') { s.hpMax += 20; s.hp += 20; }
+  } else { s.hp = Math.min(s.hpMax, s.hp + 30); }
+  s.escolhendo = null; SFX.moeda();
+  if (s.filaEscolha > 0) abrirEscolha();
+}
+function fimSurvivor() {
+  const s = G.surv; if (s.fim) return;
+  s.fim = true; s.fimT = 0; SFX.fim();
+  if (Math.floor(s.t) > s.recorde) { s.recorde = Math.floor(s.t); s.novoRec = true;
+    try { localStorage.setItem(CFG.CHAVE_SURV, s.recorde); } catch (e) {} }
+  setTimeout(() => SFX.recorde(), 400);
+}
+function atualizarSurvivor(dt) {
+  const s = G.surv; if (!s) return;
+  s.flash = Math.max(0, (s.flash || 0) - dt * 2.6);
+  if (s.fim) { s.fimT += dt; atualizarDmgs(dt); atualizarAneis(dt); return; }
+  if (s.escolhendo || G.pausa) return;
+  atualizarDmgs(dt); atualizarAneis(dt);
+  if (s.hitStop > 0) { s.hitStop -= dt; return; }          // micro-freeze de impacto
+  s.t += dt; s.invT = Math.max(0, s.invT - dt);
+  if (s.up.recup) s.hp = Math.min(s.hpMax, s.hp + s.up.recup * 0.6 * dt);
+  moverSurv(dt); spawnInimigo(dt); atualizarInimigos(dt);
+  if (s.fim) return;
+  atualizarArmasSurv(dt); atualizarProjeteis(dt); atualizarZonas(dt); atualizarOrbes(dt);
+}
+const mmss = seg => Math.floor(seg / 60) + ':' + String(Math.floor(seg % 60)).padStart(2, '0');
+
+function desenharSurvHUD() {
+  const s = G.surv, grande = MOBILE;
+  ctx.fillStyle = 'rgba(6,10,5,.35)'; ctx.fillRect(0, 0, W, grande ? 96 : 78);
+  // barra de XP no topo absoluto
+  ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(0, 0, W, 7);
+  ctx.fillStyle = '#7fd4ff'; ctx.fillRect(0, 0, W * clamp(s.xp / s.xpProx, 0, 1), 7);
+  // vida
+  const hx = 14, hy = 16, hw = grande ? 320 : 270, hh = grande ? 26 : 22;
+  const f = clamp(s.hp / s.hpMax, 0, 1);
+  ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(hx, hy, hw, hh);
+  ctx.fillStyle = f > 0.5 ? '#4fbf5a' : f > 0.25 ? '#f0c814' : '#e0402e';
+  ctx.fillRect(hx, hy, hw * f, hh);
+  ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 2; ctx.strokeRect(hx, hy, hw, hh);
+  ctx.fillStyle = '#fff'; ctx.font = '700 ' + (grande ? 15 : 13) + 'px "Courier New", monospace'; ctx.textAlign = 'center';
+  ctx.fillText('❤ ' + Math.ceil(s.hp) + ' / ' + s.hpMax, hx + hw / 2, hy + hh - (grande ? 8 : 7));
+  // nível
+  ctx.textAlign = 'left'; ctx.fillStyle = '#7fd4ff'; ctx.font = '700 ' + (grande ? 16 : 14) + 'px "Courier New", monospace';
+  ctx.fillText('Nv ' + s.nivel, hx, hy + hh + (grande ? 22 : 18));
+  // tempo (centro, grande)
+  ctx.textAlign = 'center'; ctx.fillStyle = '#eef2e0';
+  ctx.font = '700 ' + (grande ? 40 : 34) + 'px "Courier New", monospace';
+  ctx.fillText(mmss(s.t), W / 2, grande ? 46 : 42);
+  // mortos + cana (direita)
+  ctx.textAlign = 'right'; ctx.font = '700 ' + (grande ? 18 : 15) + 'px "Courier New", monospace';
+  ctx.fillStyle = '#ff8f80'; ctx.fillText('💀 ' + s.mortos, W - (grande ? 60 : 54), grande ? 30 : 26);
+  ctx.fillStyle = '#8fe36a'; ctx.fillText('🌾 ' + s.canaColetada, W - (grande ? 60 : 54), grande ? 52 : 46);
+  ctx.textAlign = 'left';
+  // botão pausa (canto)
+  const pb = grande ? 44 : 34, px = W - pb - 8, py = 8;
+  ctx.fillStyle = 'rgba(18,26,14,.8)'; ctx.fillRect(px, py, pb, pb);
+  ctx.strokeStyle = 'rgba(220,230,200,.5)'; ctx.lineWidth = 2; ctx.strokeRect(px, py, pb, pb);
+  ctx.fillStyle = '#eef2e0'; ctx.font = '700 ' + (grande ? 20 : 16) + 'px "Courier New", monospace'; ctx.textAlign = 'center';
+  ctx.fillText(G.pausa ? '▶' : '⏸', px + pb / 2, py + pb / 2 + (grande ? 7 : 6)); ctx.textAlign = 'left';
+  if (!s.fim && !s.escolhendo) botoesTela.push({ x: px, y: py, w: pb, h: pb, cb: () => { G.pausa = !G.pausa; } });
+  // armas (linha de ícones)
+  const iy = grande ? 66 : 52, isz = grande ? 30 : 26;
+  s.armas.forEach((w, i) => {
+    const ix = hx + i * (isz + 6);
+    ctx.fillStyle = 'rgba(18,26,14,.7)'; ctx.fillRect(ix, iy, isz, isz);
+    ctx.strokeStyle = '#3c4a30'; ctx.lineWidth = 1.5; ctx.strokeRect(ix, iy, isz, isz);
+    ctx.font = (grande ? 18 : 15) + 'px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(ARMA(w.id).icone, ix + isz / 2, iy + isz / 2 + (grande ? 6 : 5));
+    ctx.fillStyle = '#ffd94d'; ctx.font = '700 9px "Courier New", monospace'; ctx.textAlign = 'right';
+    ctx.fillText(w.nivel, ix + isz - 2, iy + isz - 2); ctx.textAlign = 'left';
+  });
+  // vinheta vermelha com vida baixa
+  if (s.hp / s.hpMax < 0.3 && !s.fim) {
+    ctx.strokeStyle = 'rgba(224,64,46,' + (0.25 + Math.sin(G.t * 8) * 0.15).toFixed(3) + ')';
+    ctx.lineWidth = 16; ctx.strokeRect(8, 8, W - 16, H - 16);
+  }
+  // joystick virtual (mobile)
+  if (joySurv && joySurv.ativo) {
+    ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(joySurv.ox, joySurv.oy, 62, 0, 7); ctx.stroke();
+    ctx.fillStyle = 'rgba(240,200,20,.6)';
+    ctx.beginPath(); ctx.arc(joySurv.ox + joySurv.dx * 62, joySurv.oy + joySurv.dy * 62, 26, 0, 7); ctx.fill();
+  }
+  // dica inicial
+  if (s.t < 6 && !s.fim) {
+    ctx.fillStyle = 'rgba(255,255,255,' + clamp(1 - s.t / 6, 0, 1) * 0.9 + ')';
+    ctx.font = '700 15px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText(MOBILE ? 'Arraste para mover — as armas atacam sozinhas!' :
+                 'WASD/setas para mover — as armas atacam sozinhas!', W / 2, H - 40);
+    ctx.textAlign = 'left';
+  }
+}
+
+function desenharEscolha() {
+  const s = G.surv, ops = s.escolhendo;
+  ctx.fillStyle = 'rgba(6,10,5,.82)'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd94d'; ctx.font = '700 30px "Courier New", monospace';
+  ctx.fillText('⬆ SUBIU DE NÍVEL!', W / 2, 96);
+  ctx.fillStyle = '#cfe0b8'; ctx.font = '700 14px "Courier New", monospace';
+  ctx.fillText('Escolha uma melhoria (toque ou tecla 1 / 2 / 3)', W / 2, 122);
+  ctx.textAlign = 'left';
+  const cw = 260, ch = 250, gap = 26, total = ops.length * cw + (ops.length - 1) * gap;
+  const x0 = (W - total) / 2, y0 = 156;
+  ops.forEach((op, i) => {
+    const cx = x0 + i * (cw + gap);
+    ctx.fillStyle = 'rgba(18,26,14,.95)'; ctx.fillRect(cx, y0, cw, ch);
+    ctx.strokeStyle = op.nova ? '#ffd94d' : '#8ecae6'; ctx.lineWidth = 3; ctx.strokeRect(cx, y0, cw, ch);
+    ctx.textAlign = 'center';
+    ctx.font = '52px "Segoe UI", sans-serif'; ctx.fillStyle = '#fff';
+    ctx.fillText(op.icone, cx + cw / 2, y0 + 76);
+    ctx.fillStyle = op.nova ? '#ffd94d' : '#8fd6e8'; ctx.font = '700 12px "Courier New", monospace';
+    ctx.fillText(op.nova ? (op.tipo === 'arma' ? '✨ NOVA ARMA' : op.tipo === 'passiva' ? '✨ NOVO' : '') :
+                 ('NÍVEL ' + op.nivel + ' → ' + (op.nivel + 1)), cx + cw / 2, y0 + 104);
+    ctx.fillStyle = '#eef2e0'; ctx.font = '700 17px "Courier New", monospace';
+    wrapTexto(op.nome, cx + cw / 2, y0 + 134, cw - 24, 20);
+    ctx.fillStyle = '#9fbf8a'; ctx.font = '13px "Courier New", monospace';
+    wrapTexto(op.desc, cx + cw / 2, y0 + 186, cw - 30, 17);
+    ctx.fillStyle = '#ffd94d'; ctx.font = '700 20px "Courier New", monospace';
+    ctx.fillText((i + 1), cx + cw / 2, y0 + ch - 16);
+    ctx.textAlign = 'left';
+    botoesTela.push({ x: cx, y: y0, w: cw, h: ch, cb: () => escolherMelhoria(i) });
+  });
+}
+function wrapTexto(txt, cx, cy, maxW, lh) {
+  const palavras = String(txt).split(' '); let linha = '', linhas = [];
+  for (const p of palavras) { const t = linha ? linha + ' ' + p : p;
+    if (ctx.measureText(t).width > maxW && linha) { linhas.push(linha); linha = p; } else linha = t; }
+  if (linha) linhas.push(linha);
+  linhas.forEach((l, i) => ctx.fillText(l, cx, cy + i * lh));
+}
+
+function desenharFimSurv() {
+  const s = G.surv;
+  ctx.fillStyle = 'rgba(20,8,6,.85)'; ctx.fillRect(0, 0, W, H);
+  const { x, y } = painel(560, 400);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ff6a5e'; ctx.font = '700 30px "Courier New", monospace';
+  ctx.fillText('💀 A LAVOURA CAIU', W / 2, y + 46);
+  ctx.fillStyle = '#9fbf8a'; ctx.font = '700 13px "Courier New", monospace';
+  ctx.fillText('Operador ' + (G.nomeJogador || 'OPERADOR') + ' resistiu por:', W / 2, y + 72);
+  ctx.fillStyle = '#ffd94d'; ctx.font = '700 56px "Courier New", monospace';
+  ctx.fillText(mmss(s.t), W / 2, y + 132);
+  ctx.fillStyle = '#eef2e0'; ctx.font = '700 15px "Courier New", monospace';
+  ctx.fillText('Nível ' + s.nivel + '   ·   💀 ' + s.mortos + ' pragas   ·   🌾 ' + s.canaColetada + ' cana', W / 2, y + 168);
+  ctx.fillStyle = s.novoRec ? '#ffd94d' : '#9fbf8a'; ctx.font = '700 14px "Courier New", monospace';
+  ctx.fillText(s.novoRec ? '✨ NOVO RECORDE DE SOBREVIVÊNCIA! ✨' : ('Recorde: ' + mmss(s.recorde)), W / 2, y + 200);
+  ctx.textAlign = 'left';
+  if (s.fimT > 0.5) {
+    chip(x + 30, y + 236, 220, 44, '🔄 JOGAR DE NOVO', null, true, iniciarSurvivor);
+    chip(x + 310, y + 236, 220, 44, '🏠 VOLTAR AO MENU', null, true, () => { G.fase = 'menu'; });
+  }
+}
+
+function desenharInimigo(e) {
+  const s = e.r, F = c => e.flash > 0 ? '#ffffff' : c;   // F() = branco ao levar dano
+  const kind = e.boss ? 'javali' : e.tipo.id;
+  const fr = e.frame;
+  ctx.save(); ctx.translate(e.x, e.y);
+  // sombra (simétrica, antes de espelhar)
+  ctx.fillStyle = 'rgba(10,14,6,.26)';
+  ctx.beginPath(); ctx.ellipse(0, s * 0.72, s * 0.98, s * 0.4, 0, 0, 7); ctx.fill();
+  const face = (jog.x - e.x) < 0 ? -1 : 1;               // olha para o jogador
+  const sq = e.hitT ? e.hitT / 0.12 : 0;                 // squash ao apanhar
+  ctx.scale(face * (1 + sq * 0.3), 1 - sq * 0.2);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+  if (kind === 'broca') {                                 // LAGARTA (broca-da-cana)
+    ctx.strokeStyle = F('#6a4420'); ctx.lineWidth = Math.max(1.5, s * 0.14);
+    for (let k = -1; k <= 1; k++) {
+      const lx = k * s * 0.5, ph = Math.sin(fr * 1.3 + k * 2) * s * 0.2;
+      ctx.beginPath(); ctx.moveTo(lx, s * 0.28); ctx.lineTo(lx + ph, s * 0.72); ctx.stroke();
+    }
+    const seg = 4;
+    for (let i = 0; i < seg; i++) {
+      const t = i / (seg - 1), bx = -s * 0.72 + t * s * 1.4, by = Math.sin(fr + i * 0.9) * s * 0.13, br = s * (0.56 - t * 0.06);
+      ctx.fillStyle = F(i % 2 ? '#ead2a2' : '#dcc088');
+      ctx.beginPath(); ctx.arc(bx, by, br, 0, 7); ctx.fill();
+      ctx.fillStyle = F('rgba(150,100,40,.45)');
+      ctx.beginPath(); ctx.arc(bx, by - br * 0.15, br * 0.24, 0, 7); ctx.fill();
+    }
+    const hx = s * 0.76, hy = Math.sin(fr + seg * 0.9) * s * 0.13;
+    ctx.fillStyle = F('#8a5a2a'); ctx.beginPath(); ctx.arc(hx, hy, s * 0.5, 0, 7); ctx.fill();
+    ctx.strokeStyle = F('#5a3a18'); ctx.lineWidth = Math.max(1, s * 0.09);
+    ctx.beginPath(); ctx.moveTo(hx + s * 0.2, hy - s * 0.2); ctx.lineTo(hx + s * 0.65, hy - s * 0.5);
+    ctx.moveTo(hx + s * 0.25, hy); ctx.lineTo(hx + s * 0.65, hy - s * 0.12); ctx.stroke();
+    ctx.fillStyle = F('#1a1a1a'); ctx.beginPath(); ctx.arc(hx + s * 0.16, hy - s * 0.06, Math.max(1.2, s * 0.12), 0, 7); ctx.fill();
+
+  } else if (kind === 'capivara') {                       // CAPIVARA
+    const bob = Math.sin(fr) * s * 0.05;
+    ctx.strokeStyle = F('#6a4e30'); ctx.lineWidth = Math.max(2, s * 0.16);
+    [-s * 0.55, -s * 0.2, s * 0.25, s * 0.55].forEach((lx, idx) => {
+      const ph = Math.sin(fr * 1.1 + idx * 1.7) * s * 0.16;
+      ctx.beginPath(); ctx.moveTo(lx, s * 0.34); ctx.lineTo(lx + ph, s * 0.78); ctx.stroke();
+    });
+    ctx.fillStyle = F('#a8825a');
+    ctx.beginPath(); ctx.ellipse(-s * 0.05, bob, s * 1.0, s * 0.7, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = F('rgba(0,0,0,.12)');
+    ctx.beginPath(); ctx.ellipse(-s * 0.05, bob + s * 0.32, s * 0.85, s * 0.36, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#8a6a44');
+    ctx.beginPath(); ctx.arc(s * 0.62, bob - s * 0.46, s * 0.17, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#b08c62');
+    ctx.beginPath(); ctx.ellipse(s * 0.9, bob - s * 0.02, s * 0.52, s * 0.46, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#6f5236');
+    ctx.beginPath(); ctx.ellipse(s * 1.28, bob + s * 0.08, s * 0.2, s * 0.24, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#1a1a1a');
+    ctx.beginPath(); ctx.arc(s * 1.28, bob + s * 0.04, Math.max(1.2, s * 0.06), 0, 7);
+    ctx.arc(s * 1.28, bob + s * 0.16, Math.max(1.2, s * 0.06), 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(s * 0.82, bob - s * 0.14, Math.max(1.6, s * 0.11), 0, 7); ctx.fill();
+
+  } else if (kind === 'gafanhoto') {                      // GAFANHOTO
+    const hop = Math.abs(Math.sin(fr * 1.5)) * s * 0.28;
+    ctx.translate(0, -hop);
+    ctx.strokeStyle = F('#6f9f24'); ctx.lineWidth = Math.max(2, s * 0.22);
+    ctx.beginPath(); ctx.moveTo(-s * 0.3, s * 0.12); ctx.lineTo(-s * 0.95, -s * 0.45); ctx.lineTo(-s * 0.7, s * 0.72); ctx.stroke();
+    ctx.lineWidth = Math.max(1, s * 0.11);
+    ctx.beginPath(); ctx.moveTo(s * 0.1, s * 0.2); ctx.lineTo(s * 0.35, s * 0.72);
+    ctx.moveTo(s * 0.35, s * 0.2); ctx.lineTo(s * 0.6, s * 0.72); ctx.stroke();
+    ctx.fillStyle = F('#8fbf3a');
+    ctx.beginPath(); ctx.ellipse(0, 0, s * 0.98, s * 0.42, -0.12, 0, 7); ctx.fill();
+    ctx.fillStyle = F('rgba(190,224,130,.75)');
+    ctx.beginPath(); ctx.ellipse(-s * 0.12, -s * 0.06, s * 0.72, s * 0.26, -0.15, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#7faf30');
+    ctx.beginPath(); ctx.arc(s * 0.86, -s * 0.06, s * 0.36, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#1a2e10'); ctx.beginPath(); ctx.arc(s * 0.98, -s * 0.1, s * 0.17, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#eafff0'); ctx.beginPath(); ctx.arc(s * 1.04, -s * 0.15, s * 0.06, 0, 7); ctx.fill();
+    ctx.strokeStyle = F('#6f9f24'); ctx.lineWidth = Math.max(1, s * 0.08);
+    ctx.beginPath(); ctx.moveTo(s * 1.02, -s * 0.22); ctx.lineTo(s * 1.55, -s * 0.6);
+    ctx.moveTo(s * 1.02, -s * 0.1); ctx.lineTo(s * 1.55, -s * 0.32); ctx.stroke();
+
+  } else {                                                // JAVALI (e boss)
+    const bob = Math.sin(fr) * s * 0.04;
+    ctx.strokeStyle = F('#4a3626'); ctx.lineWidth = Math.max(2.5, s * 0.16);
+    [-s * 0.5, -s * 0.15, s * 0.2, s * 0.5].forEach((lx, idx) => {
+      const ph = Math.sin(fr * 1.0 + idx * 1.6) * s * 0.14;
+      ctx.beginPath(); ctx.moveTo(lx, s * 0.42); ctx.lineTo(lx + ph, s * 0.82); ctx.stroke();
+    });
+    ctx.fillStyle = F('#6a5140');
+    ctx.beginPath(); ctx.ellipse(-s * 0.1, bob, s * 1.05, s * 0.72, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = F('#3e2e20'); ctx.lineWidth = Math.max(1.5, s * 0.08);
+    for (let k = -3; k <= 2; k++) {
+      const bx = k * s * 0.28, top = -Math.sqrt(Math.max(0, 1 - (bx / (s * 1.05)) ** 2)) * s * 0.72 + bob;
+      ctx.beginPath(); ctx.moveTo(bx, top); ctx.lineTo(bx - s * 0.06, top - s * 0.22); ctx.stroke();
+    }
+    ctx.fillStyle = F('#5e4636');
+    ctx.beginPath(); ctx.moveTo(s * 0.4, bob - s * 0.5); ctx.lineTo(s * 1.3, bob - s * 0.05);
+    ctx.lineTo(s * 1.25, bob + s * 0.42); ctx.lineTo(s * 0.4, bob + s * 0.5); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = F('#5e4636');
+    ctx.beginPath(); ctx.moveTo(s * 0.5, bob - s * 0.5); ctx.lineTo(s * 0.72, bob - s * 0.82); ctx.lineTo(s * 0.86, bob - s * 0.44); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = F('#4a3626');
+    ctx.beginPath(); ctx.ellipse(s * 1.3, bob + s * 0.16, s * 0.16, s * 0.26, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = F('#f0ead0'); ctx.lineWidth = Math.max(2, s * 0.12);
+    ctx.beginPath(); ctx.moveTo(s * 1.2, bob + s * 0.3); ctx.lineTo(s * 1.38, bob - s * 0.04); ctx.stroke();
+    ctx.fillStyle = F('#1a1a1a'); ctx.beginPath(); ctx.arc(s * 0.95, bob - s * 0.15, Math.max(1.8, s * 0.1), 0, 7); ctx.fill();
+    ctx.fillStyle = F('#c0302a'); ctx.beginPath(); ctx.arc(s * 0.95, bob - s * 0.15, Math.max(0.8, s * 0.05), 0, 7); ctx.fill();
+  }
+  ctx.restore();
+
+  if (e.boss) {
+    ctx.fillStyle = '#f0c814'; ctx.font = '700 18px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('👑', e.x, e.y - s - 6); ctx.textAlign = 'left';
+    const w = 64, f = clamp(e.hp / e.hpMax, 0, 1);
+    ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(e.x - w / 2, e.y - s - 24, w, 6);
+    ctx.fillStyle = '#ff5a4a'; ctx.fillRect(e.x - w / 2, e.y - s - 24, w * f, 6);
+  }
+}
+
+function renderSurvivor() {
+  const s = G.surv, Z = MOBILE ? CFG.ZOOM_MOBILE : 1, vw = W / Z, vh = H / Z;
+  cam.x = clamp(jog.x - vw / 2, 0, MW - vw);
+  cam.y = clamp(jog.y - vh / 2, 0, MH - vh);
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  if ((G.tremor || 0) > 0) ctx.translate(rand(-1, 1) * G.tremor * 10, rand(-1, 1) * G.tremor * 10);
+  ctx.scale(Z, Z); ctx.translate(-cam.x, -cam.y);
+  ctx.drawImage(CHAO, 0, 0);
+
+  for (const r of rastros) {                                       // marcas de esteira
+    const a = 0.18 * (1 - r.t / 7); if (a <= 0) continue;
+    ctx.fillStyle = 'rgba(58,45,26,' + a.toFixed(3) + ')';
+    const si = Math.sin(r.ang), co = Math.cos(r.ang);
+    ctx.fillRect(r.x - si * 11 - 2, r.y + co * 11 - 2, 4, 4);
+    ctx.fillRect(r.x + si * 11 - 2, r.y - co * 11 - 2, 4, 4);
+  }
+  for (const z of zonasSurv) {                                     // auras / nuvens
+    const a = z.anel ? (1 - z.t / z.vida) * 0.5 : 0.16 + Math.sin(z.t * 8) * 0.05;
+    if (z.nuvem) {
+      ctx.fillStyle = 'rgba(127,212,168,' + (0.12 + a * 0.4).toFixed(3) + ')';
+      ctx.beginPath(); ctx.arc(z.x, z.y, z.r, 0, 7); ctx.fill();
+      ctx.strokeStyle = 'rgba(159,231,192,.5)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(z.x, z.y, z.r, 0, 7); ctx.stroke();
+    } else {
+      ctx.strokeStyle = 'rgba(191,232,154,' + a.toFixed(3) + ')'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(z.x, z.y, z.r * (0.6 + 0.4 * (z.t / z.vida)), 0, 7); ctx.stroke();
+    }
+  }
+  for (const o of orbes) {                                         // cana caída (XP)
+    if (o.coracao) {
+      ctx.fillStyle = '#ff5a7a'; ctx.font = '16px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('❤', o.x, o.y + 5); ctx.textAlign = 'left';
+    } else {
+      ctx.fillStyle = '#7fe36a'; ctx.fillRect(o.x - 2.5, o.y - 5, 5, 10);
+      ctx.fillStyle = '#b6f0a0'; ctx.fillRect(o.x - 2.5, o.y - 5, 5, 3);
+    }
+  }
+  for (const e of inimigos) if (e.x > cam.x - 40 && e.x < cam.x + vw + 40 && e.y > cam.y - 40 && e.y < cam.y + vh + 40)
+    desenharInimigo(e);
+
+  for (const r of aneis) {                                         // anéis de impacto/explosão
+    const p = r.t / r.vida, rr = r.r0 + (r.r1 - r.r0) * (1 - (1 - p) * (1 - p));
+    ctx.globalAlpha = (1 - p) * 0.9; ctx.strokeStyle = r.cor; ctx.lineWidth = r.lw * (1 - p * 0.5);
+    ctx.beginPath(); ctx.arc(r.x, r.y, rr, 0, 7); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  { const pisca = s.invT > 0 && Math.floor(G.t * 20) % 2 === 0;    // colhedora
+    ctx.fillStyle = 'rgba(14,20,8,.34)';
+    ctx.beginPath(); ctx.ellipse(jog.x + 3, jog.y + 7, 27, 15, jog.ang, 0, 7); ctx.fill();
+    if (!pisca) {
+      ctx.save(); ctx.translate(jog.x, jog.y); ctx.rotate(jog.ang);
+      ctx.drawImage(SPR.colhedora[jog.movendo ? (jog.frame | 0) % 2 : 0], -28, -18);
+      ctx.restore();
+    }
+  }
+  for (const p of projeteis) {                                     // projéteis
+    for (let k = 3; k >= 1; k--) {                                 // rastro (motion blur)
+      ctx.globalAlpha = 0.13 * k; ctx.fillStyle = p.cor;
+      ctx.beginPath(); ctx.arc(p.x - p.vx * 0.014 * k, p.y - p.vy * 0.014 * k, p.tam * (1 - k * 0.16), 0, 7); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    if (p.tipo === 'foice') {
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.spin || 0);
+      ctx.fillStyle = '#cfd6dc'; ctx.fillRect(-p.tam, -2, p.tam * 2, 4); ctx.fillRect(-2, -p.tam, 4, p.tam * 2);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = p.cor; ctx.beginPath(); ctx.arc(p.x, p.y, p.tam, 0, 7); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,.5)'; ctx.beginPath(); ctx.arc(p.x - p.tam * 0.3, p.y - p.tam * 0.3, p.tam * 0.4, 0, 7); ctx.fill();
+    }
+  }
+  for (const w of s.armas) { const def = ARMA(w.id);               // lâminas do facão
+    if (w._blades) for (const b of w._blades) {
+      ctx.save(); ctx.translate(b[0], b[1]); ctx.rotate(b[2]);
+      ctx.fillStyle = '#e8eef2'; ctx.fillRect(-3, -10, 6, 20);
+      ctx.fillStyle = '#b8c2c8'; ctx.fillRect(-3, -10, 6, 5); ctx.restore();
+    }
+  }
+  for (const p of parts) { ctx.globalAlpha = clamp(1 - p.t / p.vida, 0, 1); ctx.fillStyle = p.cor; ctx.fillRect(p.x, p.y, p.tam, p.tam); }
+  ctx.globalAlpha = 1;
+  ctx.font = '700 13px "Courier New", monospace';                  // textos flutuantes
+  for (const f of flutu) { ctx.globalAlpha = clamp(1 - f.t / 1.3, 0, 1); ctx.fillStyle = f.cor;
+    ctx.fillText(f.txt, f.x - 14, f.y - f.t * 30); }
+  ctx.globalAlpha = 1;
+  for (const dm of dmgs) {                                         // números de dano
+    const a = clamp(1 - dm.t / 0.7, 0, 1), yy = dm.y - dm.t * 46, tx = dm.txt + (dm.crit ? '!' : '');
+    ctx.globalAlpha = a; ctx.textAlign = 'center';
+    ctx.font = '700 ' + (dm.crit ? 22 : 14) + 'px "Courier New", monospace';
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.strokeText(tx, dm.x, yy);
+    ctx.fillStyle = dm.crit ? '#ffd94d' : '#fff'; ctx.fillText(tx, dm.x, yy);
+  }
+  ctx.globalAlpha = 1; ctx.textAlign = 'left';
+  ctx.restore();
+
+  if (s.flash > 0) { ctx.fillStyle = 'rgba(' + s.flashCor + ',' + (s.flash * 0.4).toFixed(3) + ')'; ctx.fillRect(0, 0, W, H); }
+
+  desenharSurvHUD();
+  if (s.escolhendo) desenharEscolha();
+  else if (s.fim) desenharFimSurv();
+  else if (G.pausa) { ctx.fillStyle = 'rgba(6,10,5,.7)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ffd94d'; ctx.font = '700 30px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('⏸ PAUSA', W / 2, H / 2); ctx.font = '700 14px "Courier New", monospace'; ctx.fillStyle = '#cfe0b8';
+    ctx.fillText('P para continuar', W / 2, H / 2 + 28); ctx.textAlign = 'left'; }
+}
+
 function render() {
   botoesTela.length = 0;
+  if (G.fase === 'survivor') { renderSurvivor(); return; }
   const Z = MOBILE ? CFG.ZOOM_MOBILE : 1;
   const vw = W / Z, vh = H / Z;                     // janela de mundo visível
   cam.x = clamp(jog.x - vw / 2, 0, MW - vw);
@@ -3097,6 +3829,8 @@ function desenharMenu() {
   }
 
   ctx.fillStyle = '#9fbf8a'; ctx.font = '700 12px "Courier New", monospace';
+  chip(x + 110, y + 356, 480, 34, '\ud83d\udd25 MODO SOBREVIV\u00caNCIA \u2014 PRAGA SEM FIM', null, true, iniciarSurvivor);
+  ctx.textAlign = 'center';
   ctx.fillText('\ud83c\udfc6 Recorde: ' + G.recDias + ' dia(s) \u00b7 pico ' + $(G.recGrana), W / 2, y + 392);
 
   ctx.fillStyle = '#ffd94d';
@@ -3423,6 +4157,21 @@ const AJUDA_PAGS = [
     '',
     'Dica: combinem os mesmos DIAS DE SAFRA antes de começar.',
   ]},
+  { t: '🔥 PRAGA SEM FIM (sobrevivência)', l: [
+    'Um modo frenético, separado da campanha! No menu, toque em',
+    'MODO SOBREVIVÊNCIA. Sua colhedora é cercada por ondas',
+    'infinitas de pragas que crescem com o tempo.',
+    'Você só controla o MOVIMENTO (WASD/setas no PC, arraste na',
+    'tela no celular) — as ARMAS atacam sozinhas!',
+    'Cada praga destruída derruba CANA: colete para encher a',
+    'barra de XP e SUBIR DE NÍVEL. A cada nível, escolha 1 de 3',
+    'melhorias (novas armas ou reforços de dano, área, vida...).',
+    'Comece com as Lâminas Rotativas e monte sua combinação:',
+    'facão giratório, jato de defensivo, drone e foice.',
+    'Cuidado com o contato — sua vida cai! A cada 60s vem um',
+    'JAVALÃO gigante. Sobreviva o máximo possível: o recorde de',
+    'tempo fica salvo. Pause com P (ou o botão no canto).',
+  ]},
   { t: '🏁 CAMPANHA & RANKING', l: [
     'A safra é a CAMPANHA que você escolheu (1 a 5 dias). Bata a',
     'meta do último dia para VENCER a temporada.',
@@ -3650,6 +4399,22 @@ window.addEventListener('keydown', e => {
     if (e.code === 'ArrowLeft') { G.diasCampanha = Math.max(1, G.diasCampanha - 1); return; }
     if (e.code === 'ArrowRight') { G.diasCampanha = Math.min(CFG.DIAS_MAX, G.diasCampanha + 1); return; }
   }
+  if (G.fase === 'survivor') {
+    const s = G.surv;
+    if (s.escolhendo) {
+      if (e.code === 'Digit1') escolherMelhoria(0);
+      else if (e.code === 'Digit2') escolherMelhoria(1);
+      else if (e.code === 'Digit3') escolherMelhoria(2);
+      return;
+    }
+    if (s.fim) {
+      if ((e.code === 'Space' || e.code === 'Enter') && s.fimT > 0.5) iniciarSurvivor();
+      else if (e.code === 'Escape') G.fase = 'menu';
+      return;
+    }
+    if (e.code === 'KeyP' || e.code === 'Escape') { G.pausa = !G.pausa; return; }
+    // teclas de movimento caem para o switch abaixo
+  }
   switch (e.code) {
     case 'KeyW': case 'ArrowUp': kb.fwd = true; break;
     case 'KeyS': case 'ArrowDown': kb.re = true; break;
@@ -3712,6 +4477,12 @@ canvas.addEventListener('pointerdown', e => {
     if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { b.cb(); return; }
   }
   if (G.ajuda) { pagAjuda(1); return; }
+  if (G.fase === 'survivor') {
+    const s = G.surv;
+    if (s.escolhendo || s.fim) return;             // cards/botões já tratados acima
+    if (TOQUE) joySurv = { id: e.pointerId, ox: x, oy: y, dx: 0, dy: 0, ativo: true };
+    return;
+  }
   if (TOQUE) {
     const z = zonaEm(x, y);
     if (z && (G.fase === 'colheita' || G.fase === 'plantio')) {
@@ -3723,17 +4494,26 @@ canvas.addEventListener('pointerdown', e => {
   if (G.fase === 'plantio' && TOQUE) plantar();
 });
 canvas.addEventListener('pointermove', e => {
+  if (joySurv && joySurv.id === e.pointerId) {
+    const [jx, jy] = xyLogico(e);
+    let dx = jx - joySurv.ox, dy = jy - joySurv.oy; const m = Math.hypot(dx, dy), R = 62;
+    if (m > R) { dx = dx / m * R; dy = dy / m * R; }
+    joySurv.dx = dx / R; joySurv.dy = dy / R; return;
+  }
   if (!ptrs.has(e.pointerId)) return;
   const [x, y] = xyLogico(e);
   ptrs.set(e.pointerId, zonaEm(x, y));
   sincDpad();
 });
-function soltarPtr(e) { if (ptrs.delete(e.pointerId)) sincDpad(); }
+function soltarPtr(e) {
+  if (joySurv && joySurv.id === e.pointerId) joySurv = null;
+  if (ptrs.delete(e.pointerId)) sincDpad();
+}
 canvas.addEventListener('pointerup', soltarPtr);
 canvas.addEventListener('pointercancel', soltarPtr);
 window.addEventListener('blur', () => {
-  if (G.fase === 'colheita' || G.fase === 'plantio') G.pausa = true;
-  kb.fwd = kb.re = kb.esq = kb.dir = false; ptrs.clear(); sincDpad();
+  if (G.fase === 'colheita' || G.fase === 'plantio' || G.fase === 'survivor') G.pausa = true;
+  kb.fwd = kb.re = kb.esq = kb.dir = false; ptrs.clear(); joySurv = null; sincDpad();
 });
 
 /* ════════════════════════════════════════════════ loop e boot ═════ */
@@ -3803,7 +4583,11 @@ globalThis.__T = {
          progContrato, progContratoValor, contratoFeito, verificarComboContratos,
          listaContratos, EVENTOS, EVENTOS_PLANTIO, CONTRATOS, CONTRATOS_PLANTIO, sortearDia,
          fazerRng, comSemente, fazerCodigo, lerCodigo, meuResultado, criarDesafio,
-         entrarDesafio, compartilharCodigo, gerarMundo, plantarCampoInicial },
+         entrarDesafio, compartilharCodigo, gerarMundo, plantarCampoInicial,
+         iniciarSurvivor, atualizarSurvivor, criarInimigo, criarBoss, ganharXP,
+         abrirEscolha, escolherMelhoria, fimSurvivor, spawnInimigo,
+         SURV_ARMAS, SURV_PASSIVAS, SURV_MOBS },
+  inimigos, projeteis, orbes, zonasSurv, dmgs, aneis,
   dpad,
 };
 </script>
