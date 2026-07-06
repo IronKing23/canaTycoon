@@ -245,10 +245,13 @@ const G = {
   t: 0,                    // tempo global (para animações)
   flashRaio: 0,
   frenesi: { hoje: false, ini: 0, fim: 0, ativa: false },
-  contrato: null,
+  contratos: [], contratosPlantio: [], brocaForteProx: false,
   premHoje: 0, vendasUsinaHoje: 0, capisHoje: 0,
   praga: { hoje: false, hora: 0, lancada: false },
   bolsa: { preco: 100, var: 0, cotas: 0, hist: [100] },
+  evento: null,                      // modificador dinâmico do dia
+  comboMaxDia: 1, semDanoDia: true, vendasDroneHoje: 0, fogosApagadosHoje: 0,
+  litrosAbastecidosHoje: 0, defensivosHoje: 0, cortesSeguidosMax: 0,
   nomeJogador: 'OPERADOR',
   diasCampanha: 2,
   atrasoProxDia: 0,
@@ -796,9 +799,18 @@ function sortearDia() {
     G.frenesi.ini = rand(9 * 60, 19 * 60);
     G.frenesi.fim = G.frenesi.ini + CFG.FRENESI_MIN;
   }
-  sortearContrato();
+  sortearContratos();
+  G.comboMaxDia = 1; G.semDanoDia = true; G.vendasDroneHoje = 0;
+  G.fogosApagadosHoje = 0; G.litrosAbastecidosHoje = 0; G.defensivosHoje = 0;
   pragas.length = 0; defensivos.length = 0;
-  G.praga = { hoje: Math.random() < CFG.PRAGA_CHANCE, hora: rand(8 * 60, 18 * 60), lancada: false };
+  const chanceBroca = Math.min(0.95, CFG.PRAGA_CHANCE + (G.dia - 1) * 0.07);   // rampa
+  G.praga = { hoje: Math.random() < chanceBroca, hora: rand(8 * 60, 18 * 60), lancada: false };
+  sortearEvento();                                // << o clima operacional do dia
+  if (G.brocaForteProx) {                         // alerta do plantio anterior
+    G.praga.hoje = true; G.praga.hora = rand(7 * 60, 9 * 60); G.brocaForteProx = false;
+  }
+  const alvoCapis = CFG.N_CAPIVARAS + (G.dia - 1) * 2;   // rampa de dificuldade
+  while (capis.length < alvoCapis) capis.push(novaCapi());
   if (G.dia > 1) {                                 // pregão diário da CANA11
     const ant = G.bolsa.preco;
     let f = rand(0.86, 1.20);
@@ -822,33 +834,193 @@ function sortearDia() {
     do { x = rand(150, MW - 150); y = rand(150, MH - 150); } while (!lugarLivre(x, y, 30) && ++t < 50);
     passaros.push({ x, y, estado: 'pousado', n: randi(3, 5), t: rand(0, 9), vx: 0, vy: 0 });
   }
-  toast('☀️ DIA ' + G.dia + ' · mercado ' + G.tendencia[3] + G.tendencia[0] +
-        ' · meta ' + $(G.meta) + ' até 22:00', 4);
+  toast('☀️ DIA ' + G.dia + '/' + G.diasCampanha + ' · mercado ' + G.tendencia[3] + G.tendencia[0] +
+        ' · meta ' + $(G.meta), 3.5);
+  if (G.evento && G.evento.id !== 'normal')
+    toast(G.evento.icone + ' ' + G.evento.nome + ' — ' + G.evento.desc, 5);
+  toast('📜 ' + G.contratos.length + ' CONTRATOS hoje — cumpra TODOS p/ bônus extra!', 4);
   SFX.dia();
 }
 
-function sortearContrato() {
-  const d = G.dia, tipo = escolha(['premium', 'usina', 'pacifista']);
-  if (tipo === 'premium')
-    G.contrato = { id: 'premium', desc: 'corte ' + (3 + d) + ' canas premium', alvo: 3 + d,
-                   prog: 0, bonus: 100 + d * 30, feito: false, falhou: false };
-  else if (tipo === 'usina')
-    G.contrato = { id: 'usina', desc: 'faça 2 descargas na usina', alvo: 2,
-                   prog: 0, bonus: 90 + d * 25, feito: false, falhou: false };
-  else
-    G.contrato = { id: 'pacifista', desc: 'não atropele capivaras', alvo: 0,
-                   prog: 0, bonus: 80 + d * 20, feito: false, falhou: false };
+/* ═══════════════════ eventos dinâmicos: cada dia muda uma regra ════
+   Um "clima operacional" sorteado que altera economia, natureza ou a
+   própria máquina — obriga o jogador a mudar de estratégia todo dia. */
+const EVENTOS = [
+  { id: 'normal', nome: 'DIA COMUM', icone: '🌤️', cor: '#cfe0b8', peso: 3,
+    desc: 'Sem surpresas no talhão.' },
+  { id: 'seca', nome: 'SECA RIGOROSA', icone: '🌵', cor: '#e8b45e', peso: 2,
+    desc: 'Sem chuva. Fogo se alastra mais rápido e o diesel esquenta o motor.',
+    ap(){ G.chuva.hoje = false; } },
+  { id: 'temporal', nome: 'TEMPORAL', icone: '⛈️', cor: '#6ea8d8', peso: 2,
+    desc: 'Chove quase o dia todo: lama por tudo, mas fogo nem pega.',
+    ap(){ G.chuva.hoje = true; G.chuva.ini = 7*60; G.chuva.fim = 21*60; } },
+  { id: 'praga', nome: 'INFESTAÇÃO', icone: '🐛', cor: '#b0d84a', peso: 2,
+    desc: 'A broca ataca cedo e com força. Defensivo é ouro hoje.',
+    ap(){ G.praga.hoje = true; G.praga.hora = rand(7*60, 9*60); } },
+  { id: 'alta', nome: 'PICO DE PREÇO', icone: '💹', cor: '#7cd85a', peso: 2,
+    desc: 'Mercado aquecido: cana valorizada e frenesi garantido.',
+    ap(){ G.tendencia = CFG.TENDENCIAS[0]; G.frenesi.hoje = true;
+          G.frenesi.ini = rand(9*60,16*60); G.frenesi.fim = G.frenesi.ini + CFG.FRENESI_MIN; } },
+  { id: 'crise', nome: 'CRISE DO AÇÚCAR', icone: '📉', cor: '#ff7a5e', peso: 1,
+    desc: 'Preço em baixa — mas a meta do dia cai junto. Segure a carga!',
+    ap(){ G.tendencia = CFG.TENDENCIAS[2]; G.meta = Math.round(G.meta * 0.7); } },
+  { id: 'invasao', nome: 'INVASÃO DE CAPIVARAS', icone: '🦫', cor: '#c99a6a', peso: 1,
+    desc: 'O dobro de capivaras rondando. Cuidado com as multas!',
+    ap(){ const extra = CFG.N_CAPIVARAS;
+          for (let i=0;i<extra;i++) capis.push(novaCapi()); } },
+  { id: 'ferrovelho', nome: 'DIA DO FERRO-VELHO', icone: '⚙️', cor: '#e8c85e', peso: 1,
+    desc: 'Peças espalhadas em dobro pelo campo — colha e conserte grátis!',
+    ap(){ for (let i=0;i<CFG.PECAS_DIA;i++){ let x,y,t=0;
+            do{x=rand(120,MW-120);y=rand(120,MH-120);}while(!lugarLivre(x,y,26)&&++t<60);
+            pecas.push({x,y,rot:rand(0,6)});} } },
+  { id: 'turbo', nome: 'ADRENALINA', icone: '🔥', cor: '#ff9a3e', peso: 1,
+    desc: 'Combo enche mais rápido e o turbo dura o dobro. Acelera!',
+    ap(){ G._mTurbo = 2; G._mCombo = 1.8; } },
+  { id: 'neblina', nome: 'NEBLINA MATINAL', icone: '🌫️', cor: '#aab8bd', peso: 1,
+    desc: 'Visão curta de manhã, mas a cana rende +25% na venda.',
+    ap(){ G._mPreco = 1.25; } },
+  { id: 'apagao', nome: 'RACIONAMENTO', icone: '🔌', cor: '#d8a25e', peso: 1,
+    desc: 'Diesel caro e escasso: consumo maior o dia todo. Economize!',
+    ap(){ G._mConsumo = 1.4; } },
+  { id: 'festa', nome: 'FESTa DA COLHEITA', icone: '🎉', cor: '#e88bb0', peso: 1,
+    desc: 'Bônus de contrato dobrado e mudas premium mais baratas hoje!',
+    ap(){ G._mBonus = 2; G._mMudaPrem = 0.6; } },
+];
+const EVENTOS_PLANTIO = [
+  { id: 'pl_normal', nome: 'NOITE CALMA', icone: '🌙', cor: '#cfe0b8', peso: 3,
+    desc: 'Plantio tranquilo sob as estrelas.' },
+  { id: 'pl_lua', nome: 'LUA CHEIA', icone: '🌕', cor: '#f0e8b0', peso: 2,
+    desc: 'Noite clara e mudas PREMIUM 40% mais baratas!',
+    ap(){ G._mMudaPrem = 0.6; G._luaCheia = true; } },
+  { id: 'pl_fertil', nome: 'SOLO FÉRTIL', icone: '🌱', cor: '#7cd85a', peso: 2,
+    desc: 'A soqueira vai rebrotar MUITO mais na próxima safra!',
+    ap(){ G._mSoqueira = 1.8; } },
+  { id: 'pl_feira', nome: 'FEIRA DE MUDAS', icone: '💰', cor: '#e8c85e', peso: 2,
+    desc: 'TODAS as mudas mais baratas hoje. Capriche!',
+    ap(){ G._mMudaPrem = 0.6; G._mMudaNorm = 0.6; } },
+  { id: 'pl_geada', nome: 'GEADA', icone: '❄️', cor: '#9fd8e8', peso: 1,
+    desc: 'Frio rachando: a colhedora anda 30% mais devagar.',
+    ap(){ G._mVelPlantio = 0.7; } },
+  { id: 'pl_temporal', nome: 'TEMPORAL NOTURNO', icone: '⛈️', cor: '#6ea8d8', peso: 1,
+    desc: 'Chuva a noite toda: lama e lentidão no talhão.',
+    ap(){ G._chuvaForca = true; } },
+  { id: 'pl_broca', nome: 'ALERTA DE BROCA', icone: '🐛', cor: '#b0d84a', peso: 1,
+    desc: 'A praga vem com força na próxima safra — trate o solo!',
+    ap(){ G.brocaForteProx = true; } },
+  { id: 'pl_adubo', nome: 'ADUBAÇÃO EXTRA', icone: '🌾', cor: '#d8c060', peso: 1,
+    desc: 'Solo reforçado: a cota de mudas de hoje caiu 20%!',
+    ap(){ G.metaPlantio = Math.max(5, Math.round(G.metaPlantio * 0.8)); } },
+];
+function resetModificadores() {
+  G._mTurbo = 1; G._mCombo = 1; G._mPreco = 1; G._mConsumo = 1;
+  G._mBonus = 1; G._mMudaPrem = 1; G._mMudaNorm = 1;
+  G._mSoqueira = 1; G._mVelPlantio = 1; G._luaCheia = false; G._chuvaForca = false;
+}
+function sortearEvento() {
+  resetModificadores();
+  const ev = G.dia === 1 ? EVENTOS[0] : sorteioPesado(EVENTOS.map(e => [e, 0, e.peso]))[0];
+  G.evento = ev;
+  if (ev.ap) ev.ap();
+}
+function sortearEventoPlantio() {
+  resetModificadores();
+  const ev = sorteioPesado(EVENTOS_PLANTIO.map(e => [e, 0, e.peso]))[0];
+  G.evento = ev;
+  if (ev.ap) ev.ap();
+}
+
+const CONTRATOS = [
+  { id: 'premium',  base: 100, dia: 30, alvo: d => 3 + d,
+    desc: a => 'corte ' + a + ' canas PREMIUM', dica: 'as douradas!' },
+  { id: 'usina',    base: 90,  dia: 25, alvo: () => 2,
+    desc: () => 'faça 2 descargas na USINA', dica: 'lucro cheio' },
+  { id: 'pacifista',base: 80,  dia: 22, alvo: () => 0, meta0: true,
+    desc: () => 'não atropele NENHUMA capivara', dica: 'desvie!' },
+  { id: 'colheita', base: 70,  dia: 18, alvo: d => 40 + d * 8,
+    desc: a => 'colha ' + a + ' canas no total', dica: 'no braço' },
+  { id: 'combo',    base: 110, dia: 20, alvo: d => Math.min(4, 2 + d * 0.4),
+    desc: a => 'atinja combo x' + a.toFixed(1), dica: 'sem parar' },
+  { id: 'drone',    base: 85,  dia: 20, alvo: d => 3 + ((d/2)|0),
+    desc: a => 'venda ' + a + 'x pelo DRONE', dica: 'na correria' },
+  { id: 'bombeiro', base: 95,  dia: 22, alvo: d => 2 + ((d/2)|0),
+    desc: a => 'apague ' + a + ' focos de incêndio', dica: 'herói' },
+  { id: 'faxina',   base: 105, dia: 24, alvo: d => 2 + ((d/2)|0),
+    desc: a => 'aplique defensivo ' + a + 'x', dica: 'sem broca' },
+  { id: 'maratona', base: 120, dia: 26, alvo: d => 8 + d * 2,
+    desc: a => 'corte ' + a + ' canas SEM tomar dano', dica: 'zero batidas',
+    reset: 'dano' },
+  { id: 'combustivel', base: 75, dia: 16, alvo: d => 60 + d * 15,
+    desc: a => 'abasteça ' + a + 'L de diesel', dica: 'tanque cheio' },
+];
+const CONTRATOS_PLANTIO = [
+  { id: 'pl_prem', base: 60, dia: 22, alvo: d => 3 + ((d / 2) | 0),
+    desc: a => 'plante ' + a + ' mudas PREMIUM', dica: 'ouro puro' },
+  { id: 'pl_trat', base: 70, dia: 24, alvo: d => 5 + d,
+    desc: a => 'plante ' + a + ' em ÁREA TRATADA', dica: 'sem broca' },
+  { id: 'pl_rapido', base: 90, dia: 26, alvo: () => 0, tempo: true,
+    desc: () => 'cumpra a cota antes das 02:00', dica: 'corra!' },
+  { id: 'pl_extra', base: 55, dia: 18,
+    alvo: d => CFG.PLANTIO_BASE + (d - 1) * CFG.PLANTIO_POR_DIA + 6 + d,
+    desc: a => 'plante ' + a + ' mudas no total', dica: 'além da cota' },
+];
+function montarContrato(c, d) {
+  const alvoNum = c.alvo(d);
+  return {
+    id: c.id, desc: c.desc(alvoNum), dica: c.dica,
+    alvo: (c.meta0 || c.tempo) ? 0 : alvoNum, valorAlvo: alvoNum, tempo: !!c.tempo,
+    prog: 0, bonus: Math.round(c.base + d * c.dia),
+    feito: false, falhou: false, reset: c.reset || null,
+  };
+}
+function sortearContratos() {
+  G.contratos = []; G._comboContratoPago = false;
+  const d = G.dia, qtd = d >= 3 ? 3 : 2, pool = CONTRATOS.slice();
+  for (let i = 0; i < qtd && pool.length; i++)
+    G.contratos.push(montarContrato(pool.splice(randi(0, pool.length - 1), 1)[0], d));
+}
+function sortearContratosPlantio() {
+  G.contratosPlantio = []; G._comboContratoPago = false;
+  const d = G.dia, qtd = d >= 3 ? 2 : 1, pool = CONTRATOS_PLANTIO.slice();
+  for (let i = 0; i < qtd && pool.length; i++)
+    G.contratosPlantio.push(montarContrato(pool.splice(randi(0, pool.length - 1), 1)[0], d));
+}
+function listaContratos() { return G.fase === 'plantio' ? G.contratosPlantio : G.contratos; }
+function contratoFeito(c) {
+  if (!c || c.feito) return;
+  c.feito = true;
+  const pago = Math.round(c.bonus * (G._mBonus || 1));
+  G.grana += pago; G.stats.ganho += pago;
+  if (G.fase === 'colheita') G.vendidoHoje += pago;
+  G.picoGrana = Math.max(G.picoGrana || 0, G.grana);
+  toast('📜 CONTRATO OK: ' + c.desc + '  +' + $(pago) +
+        ((G._mBonus > 1) ? ' (dobrado!)' : ''), 2.8); SFX.recorde();
+  flut(jog.x, jog.y - 44, '+' + $(pago), '#ffd94d');
+  verificarComboContratos();
+}
+function verificarComboContratos() {
+  const lista = listaContratos();
+  if (lista.length >= 2 && !G._comboContratoPago && lista.every(c => c.feito)) {
+    G._comboContratoPago = true;
+    const extra = 70 + G.dia * 25;
+    G.grana += extra; G.stats.ganho += extra;
+    if (G.fase === 'colheita') G.vendidoHoje += extra;
+    G.picoGrana = Math.max(G.picoGrana || 0, G.grana);
+    toast('🌟 TODAS AS TAREFAS DO DIA CUMPRIDAS! Bônus extra +' + $(extra) + '!', 4);
+    SFX.recorde(); setTimeout(() => SFX.recorde(), 260);
+  }
 }
 function progContrato(id, n = 1) {
-  const c = G.contrato;
-  if (!c || c.feito || c.falhou || c.id !== id) return;
-  c.prog += n;
-  if (c.prog >= c.alvo) {
-    c.feito = true;
-    G.grana += c.bonus; G.vendidoHoje += c.bonus; G.stats.ganho += c.bonus;
-    G.picoGrana = Math.max(G.picoGrana || 0, G.grana);
-    toast('📜 CONTRATO CUMPRIDO! +' + $(c.bonus), 3); SFX.recorde();
-    flut(jog.x, jog.y - 44, '+' + $(c.bonus), '#ffd94d');
+  for (const c of listaContratos()) {
+    if (c.feito || c.falhou || c.id !== id) continue;
+    c.prog += n;
+    if (c.prog >= c.alvo) { c.prog = c.alvo; contratoFeito(c); }
+  }
+}
+function progContratoValor(id, valor) {          // metas de "atingir X" (ex.: combo)
+  for (const c of listaContratos()) {
+    if (c.feito || c.falhou || c.id !== id) continue;
+    c.prog = Math.max(c.prog, valor);
+    if (c.prog >= c.valorAlvo) { c.prog = c.valorAlvo; contratoFeito(c); }
   }
 }
 
@@ -932,6 +1104,13 @@ function recalcSaude() {
 }
 function danoComp(mapa) {
   let quebrou = null;
+  let houve = false;
+  for (const k in mapa) if (mapa[k] > 0.3) houve = true;  // dano "de verdade" (não desgaste)
+  if (houve && (G.fase === 'colheita')) {
+    G.semDanoDia = false;
+    for (const c of G.contratos)
+      if (c.id === 'maratona' && !c.feito && !c.falhou) c.prog = 0;
+  }
   for (const k in mapa) {
     if (jog.comp[k] === undefined || jog.comp[k] <= 0) continue;
     jog.comp[k] = Math.max(0, jog.comp[k] - mapa[k]);
@@ -1149,13 +1328,9 @@ function relogio(dt) {
   }
   if (!G.fechou && G.hora >= CFG.HORA_FIM) {
     G.fechou = true; jog.vel = 0;
-    const ct = G.contrato;
-    if (ct && ct.id === 'pacifista' && !ct.feito && !ct.falhou && G.capisHoje === 0) {
-      ct.feito = true;
-      G.grana += ct.bonus; G.vendidoHoje += ct.bonus; G.stats.ganho += ct.bonus;
-      G.picoGrana = Math.max(G.picoGrana || 0, G.grana);
-      toast('📜 CONTRATO CUMPRIDO (nenhuma capivara ferida)! +' + $(ct.bonus), 3);
-    }
+    if (G.capisHoje === 0)
+      for (const ct of G.contratos)
+        if (ct.id === 'pacifista' && !ct.feito && !ct.falhou) contratoFeito(ct);
     if (G.vendidoHoje >= G.meta) {
       if (G.dia >= G.diasCampanha) { fimVitoria(); return; }
       entrarReforma('noite');
@@ -1168,6 +1343,10 @@ function relogio(dt) {
 function relogioPlantio(dt) {                      // 24h de plantio em 3 min
   G.hora += dt * CFG.PLANTIO_MIN_POR_SEG;
   G.stats.minTrab += dt * CFG.PLANTIO_MIN_POR_SEG;
+  if (!G._pl2h && G.hora >= 26 * 60) {             // passou das 02:00
+    G._pl2h = true;
+    for (const c of G.contratosPlantio) if (c.tempo && !c.feito) c.falhou = true;
+  }
   G.bolsa.preco = clamp(G.bolsa.preco * (1 + rand(-1, 1) * 0.0006), 25, 999);
   if (!G._avisoPl && G.hora >= 28 * 60) {
     G._avisoPl = true;
@@ -1183,7 +1362,7 @@ function relogioPlantio(dt) {                      // 24h de plantio em 3 min
 
 function moverJogador(dt, colhendo) {
   const parado = jog.seco;
-  const velMax = uv('motor') * (jog.turbo > 0 ? 2 : 1) * (colhendo ? 1 : 0.9);
+  const velMax = uv('motor') * (jog.turbo > 0 ? 2 : 1) * (colhendo ? 1 : 0.9 * (G._mVelPlantio || 1));
   let alvo = 0;
   if (!parado) {
     if (dpad.fwd) alvo = velMax;
@@ -1295,6 +1474,7 @@ function moverJogador(dt, colhendo) {
   if (jog.turbo > 0) cons = 0;
   if (G.chuva.ativa) cons *= 1.25;
   if (colhendo && G.hora > 19 * 60) cons *= 1.10;                   // orvalho noturno
+  cons *= (G._mConsumo || 1);                                       // evento (racionamento)
   jog.comb = Math.max(0, jog.comb - cons * dt);
   if (jog.movendo) {                              // desgaste por sistema
     const R = CFG.ROTA_DANO.desgasteS;
@@ -1340,6 +1520,8 @@ function cortar() {
     if (c.fogo) { const f = fogos.find(f => f.c === c); if (f) fogos.splice(fogos.indexOf(f), 1); }
     danoComp({ corte: CFG.ROTA_DANO.cortePts });   // lâminas gastam cortando
     G.stats.cortes++;
+    progContrato('colheita');
+    if (G.semDanoDia) progContrato('maratona');    // conta enquanto não tomou dano
     const broqueada = c.praga;
     if (broqueada) removerPraga(c);
     cortadas.push({ x: c.x, y: c.y });
@@ -1348,8 +1530,10 @@ function cortar() {
                       (jog.turbo > 0 ? 1.5 : 1) * (broqueada ? CFG.PRAGA_VALOR : 1);
     if (broqueada) flut(c.x, c.y - 12, '🐛 broqueada', '#c9a86a');
     if (c.prem) { G.premHoje++; G.stats.prem++; progContrato('premium'); }
-    jog.combo = Math.min(CFG.COMBO_MAX, jog.combo + CFG.COMBO_GANHO);
+    jog.combo = Math.min(CFG.COMBO_MAX, jog.combo + CFG.COMBO_GANHO * (G._mCombo || 1));
     jog.comboT = CFG.COMBO_JANELA;
+    G.comboMaxDia = Math.max(G.comboMaxDia, jog.combo);
+    progContratoValor('combo', jog.combo);
     SFX.corte();
     part(c.x, c.y, { vx: [-70, 70], vy: [-90, -20], vida: [.3, .6], tam: [2, 4],
       cores: c.prem ? ['#ffd94d', '#fff3b0', '#c79b08'] : ['#7cc85a', '#d8c86a', '#3a7d2c'],
@@ -1371,7 +1555,7 @@ function combos(dt) {
     if (jog.comboT > 0) jog.comboT -= dt;
     else jog.combo = Math.max(1, jog.combo - dt * 1.6);
     if (jog.combo >= CFG.COMBO_MAX) {
-      jog.turbo = CFG.TURBO_DUR; jog.combo = 1; jog.comboT = 0;
+      jog.turbo = CFG.TURBO_DUR * (G._mTurbo || 1); jog.combo = 1; jog.comboT = 0;
       toast('🔥 MODO TURBO! Velocidade 2x e diesel zero', 2.5);
       SFX.turbo(); tremer(0.3);
     }
@@ -1403,10 +1587,10 @@ function atualizarCapis(dt) {
     if (cp.cd <= 0 && jog.movendo && dist2(jog.x, jog.y, cp.x, cp.y) < 34 ** 2) {
       cp.cd = 2;
       G.capisHoje++;
-      const ct = G.contrato;
-      if (ct && ct.id === 'pacifista' && !ct.feito && !ct.falhou) {
-        ct.falhou = true; toast('📜 Contrato do dia quebrado…', 2.2);
-      }
+      for (const ct of G.contratos)
+        if (ct.id === 'pacifista' && !ct.feito && !ct.falhou) {
+          ct.falhou = true; toast('📜 Contrato pacifista quebrado…', 2.2);
+        }
       danoComp(CFG.ROTA_DANO.capivara);
       G.stats.capis++; G.stats.gasto += CFG.MULTA_CAPIVARA;
       G.grana = Math.max(0, G.grana - CFG.MULTA_CAPIVARA);
@@ -1539,6 +1723,8 @@ function abastecer() {
   if (gasto < precoL) { toast('💸 Sem dinheiro para diesel'); SFX.multa(); return; }
   const litros = gasto / precoL;
   jog.comb = Math.min(cap, jog.comb + litros); G.grana -= gasto; G.stats.gasto += gasto;
+  G.litrosAbastecidosHoje += litros;
+  progContrato('combustivel', litros);
   toast('⛽ +' + Math.round(litros) + 'L  (−' + $(gasto) + ')' + (naUsina ? ' · preço de usina!' : ''));
   SFX.diesel();
   flut(jog.x, jog.y - 30, '−' + $(gasto), '#ffb35e');
@@ -1554,7 +1740,7 @@ function consertar() {
 }
 function vender(taxa) {
   if (jog.cargaUn <= 0) return;
-  const mult = G.tendencia[1] * (G.frenesi.ativa ? CFG.FRENESI_MULT : 1);
+  const mult = G.tendencia[1] * (G.frenesi.ativa ? CFG.FRENESI_MULT : 1) * (G._mPreco || 1);
   const liquido = jog.cargaValor * mult * (1 - taxa);
   G.grana += liquido; G.vendidoHoje += liquido; G.stats.ganho += liquido;
   G.picoGrana = Math.max(G.picoGrana || 0, G.grana);
@@ -1568,14 +1754,18 @@ function vender(taxa) {
 function venderDrone() {
   if (jog.cargaUn <= 0) { toast('caçamba vazia'); return; }
   vender(CFG.TAXA_DRONE); droneAnim('📦');
+  G.vendasDroneHoje++; progContrato('drone');
 }
 function bombeiro() {
   if (!fogos.length) { toast('nenhum foco de incêndio'); return; }
   if (G.grana < CFG.PRECO_BOMBEIRO) { toast('💸 Bombeiro custa ' + $(CFG.PRECO_BOMBEIRO)); SFX.multa(); return; }
   G.grana -= CFG.PRECO_BOMBEIRO; G.stats.gasto += CFG.PRECO_BOMBEIRO;
   droneAnim('🚒');
+  const qtd = fogos.length;
   while (fogos.length) apagarFogo(fogos[0]);
-  toast('🚒 Drone bombeiro apagou tudo  (−' + $(CFG.PRECO_BOMBEIRO) + ')', 2.6);
+  G.fogosApagadosHoje += qtd;
+  for (let i = 0; i < qtd; i++) progContrato('bombeiro');
+  toast('🚒 Drone bombeiro apagou ' + qtd + ' foco(s)  (−' + $(CFG.PRECO_BOMBEIRO) + ')', 2.6);
   SFX.bombeiro();
 }
 function aplicarDefensivo() {
@@ -1599,6 +1789,7 @@ function aplicarDefensivo() {
     toast('🧪 Área tratada! Mudas e soqueira daqui nascem protegidas  (−' + $(CFG.DEFENSIVO_CUSTO) + ')', 2.8);
   }
   SFX.spray(); tremer(0.06);
+  G.defensivosHoje++; progContrato('faxina');
   part(sx, sy, { vx: [-90, 90], vy: [-90, 90], vida: [.35, .7], tam: [2, 3],
     cores: ['#9fe7c0', '#c8f2dd', '#7fd4a8'], grav: -20, n: 26 });
   droneAnim('🧪');
@@ -1643,7 +1834,9 @@ function plantioValido(x, y) {
 }
 function plantar() {
   if (G.fase !== 'plantio') return;
-  const prem = G.mudaPremium, custo = prem ? CFG.MUDA_PREMIUM : CFG.MUDA_NORMAL;
+  const prem = G.mudaPremium;
+  const custo = prem ? Math.round(CFG.MUDA_PREMIUM * (G._mMudaPrem || 1))
+                     : Math.round(CFG.MUDA_NORMAL * (G._mMudaNorm || 1));
   const [sx, sy] = localPt(34, 0);
   if (!plantioValido(sx, sy)) { toast('solo ocupado aqui'); SFX.multa(); return; }
   if (G.grana < custo) { toast('💸 Muda ' + (prem ? 'premium ' : '') + 'custa ' + $(custo)); SFX.multa(); return; }
@@ -1651,6 +1844,11 @@ function plantar() {
   const dentro = defensivos.some(d => dist2(sx, sy, d.x, d.y) < d.r * d.r);
   plantios.push({ x: sx, y: sy, prem, prot: dentro });
   G.plantadasHoje++;
+  progContrato('pl_extra');                        // total plantado
+  if (prem) progContrato('pl_prem');
+  if (dentro) progContrato('pl_trat');
+  if (G.plantadasHoje === G.metaPlantio && G.hora < 26 * 60)   // cota antes das 02:00
+    for (const c of G.contratosPlantio) if (c.id === 'pl_rapido' && !c.feito) contratoFeito(c);
   SFX.plantar();
   part(sx, sy, { vx: [-25, 25], vy: [-40, -8], vida: [.3, .5], tam: [2, 3],
     cores: ['#7cc85a', '#5a3d28'], grav: 180, n: 5 });
@@ -1670,10 +1868,17 @@ function soqueiraCabe(x, y) {
 function irPlantio() {                            // oficina → plantio (24h corridas)
   canas.length = 0; gLimpar(); fogos.length = 0; pragas.length = 0;
   G.fase = 'plantio'; G.plantadasHoje = 0; G.mudaPremium = false;
-  G.hora = CFG.HORA_INI; G._avisoPl = false;
+  G.hora = CFG.HORA_INI; G._avisoPl = false; G._pl2h = false;
   G.chuva = { hoje: Math.random() < 0.45, ini: 0, fim: 0, ativa: false };
   if (G.chuva.hoje) { G.chuva.ini = rand(10 * 60, 26 * 60); G.chuva.fim = G.chuva.ini + rand(90, 180); }
-  toast('🌱 PLANTIO · cota ' + G.metaPlantio + ' mudas até as 06:00 (24h = 3 min!) · Q troca a muda', 4.2);
+  sortearEventoPlantio();                          // << clima do plantio (pode mexer na cota/chuva)
+  if (G._chuvaForca) { G.chuva = { hoje: true, ini: 6 * 60, fim: 30 * 60, ativa: false }; }
+  sortearContratosPlantio();
+  toast('🌱 PLANTIO · cota ' + G.metaPlantio + ' mudas até 06:00 (24h = 3 min!)', 4);
+  if (G.evento && G.evento.id !== 'pl_normal')
+    toast(G.evento.icone + ' ' + G.evento.nome + ' — ' + G.evento.desc, 5);
+  if (G.contratosPlantio.length)
+    toast('📜 ' + G.contratosPlantio.length + ' tarefa(s) de plantio hoje!', 4);
 }
 function encerrarPlantio() {
   if (G.plantadasHoje < G.metaPlantio) {
@@ -1682,7 +1887,7 @@ function encerrarPlantio() {
   for (const pl of plantios) novaCana(pl.x, pl.y, pl.prem, pl.prot);
   let re = 0;
   for (const s of cortadas)
-    if (Math.random() < CFG.SOQUEIRA && soqueiraCabe(s.x, s.y)) {
+    if (Math.random() < CFG.SOQUEIRA * (G._mSoqueira || 1) && soqueiraCabe(s.x, s.y)) {
       novaCana(s.x, s.y, false, defensivos.some(d => dist2(s.x, s.y, d.x, d.y) < d.r * d.r));
       re++;
     }
@@ -2204,21 +2409,48 @@ function desenharHUD() {
   ctx.font = '700 13px "Courier New", monospace';
   ctx.fillText(jog.cargaUn + '/' + uv('cacamba'), 844, 31);
   ctx.font = '11px "Courier New", monospace'; ctx.fillStyle = '#ffe27a';
-  ctx.fillText('~' + $(jog.cargaValor * G.tendencia[1] * (G.frenesi.ativa ? CFG.FRENESI_MULT : 1)), 844, 42);
+  ctx.fillText('~' + $(jog.cargaValor * G.tendencia[1] * (G.frenesi.ativa ? CFG.FRENESI_MULT : 1) * (G._mPreco || 1)), 844, 42);
 
-  if (G.fase === 'colheita' && G.contrato) {                        // contrato do dia
-    const c = G.contrato;
+  if (G.fase === 'colheita' || G.fase === 'plantio') {              // pilha de contratos
+    const lista = listaContratos();
     ctx.font = '700 11px "Courier New", monospace';
-    const prog = c.id === 'pacifista'
-      ? (c.falhou ? '✗' : (c.feito ? '✓' : '…'))
-      : Math.min(c.prog, c.alvo) + '/' + c.alvo + (c.feito ? ' ✓' : '');
-    const txt = '📜 ' + c.desc + ' · ' + prog + '  +' + $(c.bonus);
-    const tw = ctx.measureText(txt).width + 18;
-    ctx.fillStyle = 'rgba(12,18,10,.8)'; ctx.fillRect(10, 52, tw, 20);
-    ctx.strokeStyle = c.feito ? '#7cd85a' : c.falhou ? '#ff6a5e' : 'rgba(240,200,20,.55)';
-    ctx.lineWidth = 1.5; ctx.strokeRect(10, 52, tw, 20);
-    ctx.fillStyle = c.feito ? '#a9e88c' : c.falhou ? '#ff8f80' : '#eef2e0';
-    ctx.fillText(txt, 19, 66);
+    let cy = 52;
+    for (const c of lista) {
+      let prog;
+      if (c.id === 'pacifista') prog = c.falhou ? '✗' : (c.feito ? '✓' : 'ok');
+      else if (c.id === 'combo') prog = 'x' + c.prog.toFixed(1) + '/x' + c.valorAlvo.toFixed(1) + (c.feito ? ' ✓' : '');
+      else if (c.id === 'combustivel') prog = Math.floor(c.prog) + '/' + c.alvo + 'L' + (c.feito ? ' ✓' : '');
+      else if (c.tempo) prog = c.feito ? '✓' : (c.falhou ? '✗' : '⏳');
+      else prog = Math.min(Math.floor(c.prog), c.alvo) + '/' + c.alvo + (c.feito ? ' ✓' : '');
+      const txt = '📜 ' + c.desc + ' · ' + prog;
+      const bonusTxt = '+' + $(Math.round(c.bonus * (G._mBonus || 1)));
+      const tw = ctx.measureText(txt).width + ctx.measureText(bonusTxt).width + 26;
+      ctx.fillStyle = 'rgba(12,18,10,.82)'; ctx.fillRect(10, cy, tw, 18);
+      ctx.strokeStyle = c.feito ? '#7cd85a' : c.falhou ? '#ff6a5e' : 'rgba(240,200,20,.5)';
+      ctx.lineWidth = 1.2; ctx.strokeRect(10, cy, tw, 18);
+      ctx.fillStyle = c.feito ? '#a9e88c' : c.falhou ? '#ff8f80' : '#eef2e0';
+      ctx.fillText(txt, 17, cy + 13);
+      ctx.fillStyle = '#ffd94d';
+      ctx.fillText(bonusTxt, 17 + ctx.measureText(txt).width + 8, cy + 13);
+      cy += 21;
+    }
+    if (lista.length >= 2 && lista.every(c => c.feito)) {           // selo de tudo cumprido
+      ctx.fillStyle = '#ffd94d'; ctx.font = '700 10px "Courier New", monospace';
+      ctx.fillText('🌟 todas cumpridas!', 14, cy + 10);
+    }
+  }
+
+  if ((G.fase === 'colheita' || G.fase === 'plantio') && G.evento && G.evento.id !== 'normal') {
+    const ev = G.evento;                                            // badge do evento
+    ctx.font = '700 11px "Courier New", monospace';
+    const t2 = ev.icone + ' ' + ev.nome;
+    const tw2 = ctx.measureText(t2).width + 18;
+    const nC = ((G.fase === 'colheita' || G.fase === 'plantio') ? listaContratos().length : 0);
+    const bx2 = W / 2 - tw2 / 2, by2 = 54 + nC * 21 + 6;
+    ctx.fillStyle = 'rgba(12,18,10,.82)'; ctx.fillRect(bx2, by2, tw2, 20);
+    ctx.strokeStyle = ev.cor; ctx.lineWidth = 1.5; ctx.strokeRect(bx2, by2, tw2, 20);
+    ctx.fillStyle = ev.cor; ctx.textAlign = 'center';
+    ctx.fillText(t2, W / 2, by2 + 14); ctx.textAlign = 'left';
   }
 
   { const cx0 = 606, cy0 = 38;                                       // 4 componentes
@@ -2415,42 +2647,72 @@ function painel(wp, hp) {
 
 function desenharMenu() {
   ctx.fillStyle = 'rgba(8,12,6,.55)'; ctx.fillRect(0, 0, W, H);
-  const { x, y } = painel(660, 430);
+  const { x, y } = painel(700, 484);
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd94d';
-  ctx.font = '700 44px "Courier New", monospace';
-  ctx.fillText('🚜 CANA TYCOON', W / 2, y + 56);
-  ctx.fillStyle = '#9fbf8a'; ctx.font = '700 12px "Courier New", monospace';
-  ctx.fillText('SIMULADOR DE SAFRA · CAMPANHA DE ' + G.diasCampanha + ' DIA' + (G.diasCampanha > 1 ? 'S' : ''), W / 2, y + 78);
-  ctx.fillStyle = '#77826a'; ctx.font = '10px "Courier New", monospace';
-  ctx.fillText('(digite seu nome no campo acima)', W / 2, y + 122);
+  ctx.font = '700 40px "Courier New", monospace';
+  ctx.fillText('🚜 CANA TYCOON', W / 2, y + 46);
+  ctx.fillStyle = '#9fbf8a'; ctx.font = '700 11px "Courier New", monospace';
+  ctx.fillText('S I M U L A D O R   D E   S A F R A', W / 2, y + 66);
 
-  ctx.save();                                                       // colhedora gigante
-  ctx.translate(W / 2, y + 150); ctx.scale(2.4, 2.4);
+  ctx.save();                                                       // colhedora
+  ctx.translate(W / 2, y + 104); ctx.scale(1.9, 1.9);
   ctx.drawImage(SPR.colhedora[Math.floor(G.t * 6) % 2], -28, -18);
   ctx.restore();
 
-  ctx.fillStyle = '#dfe8d2'; ctx.font = '13px "Courier New", monospace';
-  const li = [
-    'Colha, venda e cumpra a META até as 22:00 — ou o contrato acaba.',
-    'Usina paga 100% (e diesel pela metade!) · drone vende com −20%.',
-    'Combo x4 = TURBO com corte +50% · raios queimam · capivara multa.',
-    'Sistemas separados 🔧: quebrou no campo? REFORMA LINEAR!',
-    'Contratos 📜, FRENESI ⚡, BROCA 🐛, bolsa 📈. Você escolhe os dias!',
-  ];
-  li.forEach((l, i) => ctx.fillText(l, W / 2, y + 206 + i * 21));
+  ctx.fillStyle = '#77826a'; ctx.font = '10px "Courier New", monospace';
+  ctx.fillText('\u25B2 digite seu nome no campo acima \u25B2', W / 2, y + 146);
 
-  ctx.fillStyle = '#9fbf8a'; ctx.font = '700 13px "Courier New", monospace';
-  ctx.fillText('🏆 Recordes: ' + G.recDias + ' dia(s) · pico ' + $(G.recGrana), W / 2, y + 330);
+  // ---- SELETOR DE DIAS DE SAFRA ----
+  const selY = y + 168;
+  ctx.fillStyle = '#cfe0b8'; ctx.font = '700 13px "Courier New", monospace';
+  ctx.fillText('QUANTOS DIAS DE SAFRA?', W / 2, selY);
+  const dc = G.diasCampanha;
+  chip(W / 2 - 128, selY + 10, 42, 40, '\u25C0', null, dc > 1,
+       () => { G.diasCampanha = Math.max(1, G.diasCampanha - 1); });
+  ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.fillRect(W / 2 - 78, selY + 10, 156, 40);
+  ctx.strokeStyle = '#f0c814'; ctx.lineWidth = 2; ctx.strokeRect(W / 2 - 78, selY + 10, 156, 40);
+  ctx.fillStyle = '#ffd94d'; ctx.font = '700 22px "Courier New", monospace';
+  ctx.fillText(dc + (dc > 1 ? ' DIAS' : ' DIA'), W / 2, selY + 37);
+  for (let i = 0; i < CFG.DIAS_MAX; i++) {
+    ctx.fillStyle = i < dc ? '#ffd94d' : '#4a5540';
+    ctx.beginPath(); ctx.arc(W / 2 - (CFG.DIAS_MAX - 1) * 8 + i * 16, selY + 60, 3.5, 0, 7); ctx.fill();
+  }
+  chip(W / 2 + 86, selY + 10, 42, 40, '\u25B6', null, dc < CFG.DIAS_MAX,
+       () => { G.diasCampanha = Math.min(CFG.DIAS_MAX, G.diasCampanha + 1); });
+  ctx.fillStyle = '#77826a'; ctx.font = '9px "Courier New", monospace';
+  ctx.fillText('padrao 2 \u00b7 max ' + CFG.DIAS_MAX + '   (setas \u2190 \u2192)', W / 2, selY + 78);
+
+  // ---- EQUIPE DE MECÂNICOS (galeria de avatares) ----
+  const galY = y + 278;
+  ctx.fillStyle = '#cfe0b8'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('\ud83d\udd27 SUA EQUIPE NA REFORMA LINEAR', W / 2, galY);
+  const n = AVA.length, gap = 78, x0 = W / 2 - (n - 1) * gap / 2;
+  for (let i = 0; i < n; i++) {
+    const ax = x0 + i * gap, ay = galY + 14;
+    const bob = Math.sin(G.t * 2 + i * 0.7) * 2;
+    if (AVA[i]) {
+      ctx.drawImage(AVA[i], ax - 24, ay + bob, 48, 48);
+      ctx.strokeStyle = '#3c4a30'; ctx.lineWidth = 1; ctx.strokeRect(ax - 24, ay + bob, 48, 48);
+    }
+    ctx.fillStyle = '#f0c814'; ctx.font = '9px "Courier New", monospace';
+    ctx.fillText('\u2605'.repeat(CFG.MECANICOS[i][1]), ax, ay + 60 + bob);
+    ctx.fillStyle = '#9fbf8a'; ctx.font = '700 8px "Courier New", monospace';
+    const nm = CFG.MECANICOS[i][0];
+    ctx.fillText(nm.length > 10 ? nm.slice(0, 9) + '\u2026' : nm, ax, ay + 70 + bob);
+  }
+
+  ctx.fillStyle = '#9fbf8a'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('\ud83c\udfc6 Recorde: ' + G.recDias + ' dia(s) \u00b7 pico ' + $(G.recGrana), W / 2, y + 400);
 
   ctx.fillStyle = '#ffd94d';
   ctx.globalAlpha = 0.6 + 0.4 * Math.sin(G.t * 4);
-  ctx.font = '700 17px "Courier New", monospace';
-  ctx.fillText('ESPAÇO ou TOQUE para assumir a máquina', W / 2, y + 362);
+  ctx.font = '700 16px "Courier New", monospace';
+  ctx.fillText('ESPA\u00c7O ou TOQUE para come\u00e7ar a safra', W / 2, y + 424);
   ctx.globalAlpha = 1; ctx.textAlign = 'left';
-  chip(x + 36, y + 380, 190, 36, '📖 COMO JOGAR  H', null, true,
+  chip(x + 50, y + 440, 186, 34, '\ud83d\udcd6 COMO JOGAR  H', null, true,
        () => { G.ajuda = true; G.ajudaPag = 0; });
-  chip(x + 434, y + 380, 190, 36, (G.telaCheia ? '⊡ SAIR DA TELA' : '⛶ TELA CHEIA  F'), null, true,
+  chip(x + 464, y + 440, 186, 34, (G.telaCheia ? '\u22a1 SAIR DA TELA' : '\u26f6 TELA CHEIA  F'), null, true,
        alternarTelaCheia);
 }
 
@@ -2730,6 +2992,22 @@ const AJUDA_PAGS = [
     'Designe um por sistema, feche o orçamento e a equipe repara.',
     'Reforma que varar a madrugada ATRASA o início do dia seguinte.',
   ]},
+  { t: '🎲 EVENTOS DO DIA', l: [
+    'Todo dia sorteia um EVENTO que muda as regras — leia o aviso',
+    'colorido no topo e adapte a estratégia:',
+    '🌵 SECA: sem chuva, fogo voa · ⛈️ TEMPORAL: lama, mas sem fogo.',
+    '🐛 INFESTAÇÃO: broca cedo e forte · 💹 PICO: preço alto + frenesi.',
+    '📉 CRISE: preço baixo (mas a meta cai) · 🦫 INVASÃO: capivaras em',
+    'dobro · ⚙️ FERRO-VELHO: peças em dobro · 🔥 ADRENALINA: turbo 2x.',
+    '🌫️ NEBLINA: cana +25% · 🔌 RACIONAMENTO: diesel voa · 🎉 FESTA:',
+    'bônus de contrato dobrado e muda premium mais barata.',
+    '',
+    'CONTRATOS: agora são 2 a 3 tarefas AO MESMO TEMPO por dia!',
+    'Cortar premium, combo alto, apagar fogos, dia sem dano, faxina',
+    'com defensivo... cumpra TODAS e ganhe um bônus extra gordo!',
+    'O PLANTIO também tem eventos (lua cheia, solo fértil, geada,',
+    'feira de mudas, alerta de broca) e tarefas próprias de plantio.',
+  ]},
   { t: '🏁 CAMPANHA & RANKING', l: [
     'A safra é a CAMPANHA que você escolheu (1 a 5 dias). Bata a',
     'meta do último dia para VENCER a temporada.',
@@ -2906,6 +3184,10 @@ window.addEventListener('keydown', e => {
     if (e.code === 'KeyF') { alternarTelaCheia(); return; }
     return;
   }
+  if (G.fase === 'menu') {                          // no menu, setas escolhem os dias
+    if (e.code === 'ArrowLeft') { G.diasCampanha = Math.max(1, G.diasCampanha - 1); return; }
+    if (e.code === 'ArrowRight') { G.diasCampanha = Math.min(CFG.DIAS_MAX, G.diasCampanha + 1); return; }
+  }
   switch (e.code) {
     case 'KeyW': case 'ArrowUp': kb.fwd = true; break;
     case 'KeyS': case 'ArrowDown': kb.re = true; break;
@@ -3040,7 +3322,10 @@ globalThis.__T = {
          infestar, lancarPraga, aplicarDefensivo, comprarCotas, venderCotas,
          resgatarBolsa, bolsaValor, pagAjuda, alternarTelaCheia,
          entrarReforma, atribuirMec, iniciarReparos, voltarAoCampo, irOficina,
-         estimativa, danoComp, curarPts, fimVitoria, salvarRanking, recalcSaude },
+         estimativa, danoComp, curarPts, fimVitoria, salvarRanking, recalcSaude,
+         sortearEvento, sortearEventoPlantio, sortearContratos, sortearContratosPlantio,
+         progContrato, progContratoValor, contratoFeito, verificarComboContratos,
+         listaContratos, EVENTOS, EVENTOS_PLANTIO, CONTRATOS, CONTRATOS_PLANTIO, sortearDia },
   dpad,
 };
 </script>
