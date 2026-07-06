@@ -76,6 +76,34 @@
   #frame:-webkit-full-screen canvas { width:min(100vw, 177.77vh); height:auto; border-radius:0; }
   footer { font-size:11px; color:#8aa178; letter-spacing:.5px; text-align:center; user-select:none; }
   /* celular deitado: some com o "cromo" e o canvas ocupa a tela toda */
+  #codigoBox {
+    position:absolute; inset:0; z-index:6; display:none;
+    align-items:center; justify-content:center;
+    background:rgba(4,8,3,.82); border-radius:4px; padding:12px;
+  }
+  .cx-card {
+    width:min(92%, 560px); background:#0d130a;
+    border:3px solid #f0c814; border-radius:8px;
+    box-shadow:0 10px 40px rgba(0,0,0,.6); padding:16px 16px 14px;
+    font-family:"Courier New", monospace; text-align:center;
+  }
+  .cx-title { color:#ffd94d; font-weight:700; font-size:18px; letter-spacing:1px; margin-bottom:8px; }
+  .cx-hint { color:#9fbf8a; font-size:12px; line-height:1.5; margin-bottom:10px; }
+  .cx-hint b { color:#cfe0b8; }
+  #codigoTxt {
+    width:100%; height:96px; resize:none; box-sizing:border-box;
+    background:#060a05; color:#8fe388; border:2px solid #3d5228; border-radius:5px;
+    font-family:"Courier New", monospace; font-size:12px; line-height:1.35;
+    padding:8px; word-break:break-all; outline:none; margin-bottom:12px;
+  }
+  .cx-row { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; }
+  .cx-row button {
+    flex:1 1 auto; min-width:120px; cursor:pointer;
+    background:#1c2416; color:#eef2e0; border:2px solid #f0c814; border-radius:5px;
+    font-family:"Courier New", monospace; font-weight:700; font-size:14px; padding:10px 8px;
+  }
+  .cx-row button:active { background:#2a3620; }
+  #codigoFechar { border-color:#5a6a48; color:#cfe0b8; }
   @media (max-height: 560px) and (orientation: landscape) {
     body { padding:0; gap:0; }
     h1, footer { display:none; }
@@ -91,6 +119,18 @@
   <div id="frame">
     <canvas id="game" width="960" height="540"></canvas>
     <div id="nomeBox"><label>OPERADOR:</label><input id="nome" maxlength="12" placeholder="SEU NOME" autocomplete="off"></div>
+    <div id="codigoBox">
+      <div class="cx-card">
+        <div class="cx-title">⚔️ SEU CÓDIGO DE DESAFIO</div>
+        <div class="cx-hint">Copie e envie ao seu amigo (WhatsApp, etc.).<br>Ele cola em <b>ENTRAR COM CÓDIGO</b> e joga a mesma safra!</div>
+        <textarea id="codigoTxt" readonly spellcheck="false"></textarea>
+        <div class="cx-row">
+          <button id="codigoCopiar" type="button">📋 COPIAR</button>
+          <button id="codigoShare" type="button">📤 COMPARTILHAR</button>
+          <button id="codigoFechar" type="button">✖ FECHAR</button>
+        </div>
+      </div>
+    </div>
   </div>
   <footer>
     <b>WASD/setas</b> dirigir · <b>1</b> diesel · <b>2</b> conserto · <b>3</b> vender (drone) ·
@@ -1069,6 +1109,7 @@ function progContratoValor(id, valor) {          // metas de "atingir X" (ex.: c
 }
 
 function iniciarJogo() {
+  if (typeof document !== 'undefined') { const cb = document.getElementById('codigoBox'); if (cb) cb.style.display = 'none'; }
   const inp = document.getElementById('nome');
   G.nomeJogador = (((inp && inp.value) || '').trim().toUpperCase().slice(0, 12)) || 'OPERADOR';
   try { localStorage.setItem(CFG.CHAVE_NOME, G.nomeJogador); } catch (e) {}
@@ -2966,20 +3007,36 @@ function entrarDesafio() {
   iniciarJogo();
   toast('⚔️ DUELO vs ' + (o.n || 'RIVAL') + '! Mesma safra dele — bata os ' + $(o.g || 0) + '!', 5);
 }
-function compartilharCodigo() {
-  const r = meuResultado(), code = fazerCodigo(r);
-  const msg = 'Te desafio no CANA TYCOON! 🚜 Minha safra rendeu ' + $(r.g) +
-              ' em ' + r.dd + ' dia(s). Jogue a MESMA safra e me supere — ' +
-              'cole este codigo no jogo (menu -> ENTRAR COM CODIGO): ' + code;
-  if (typeof navigator !== 'undefined' && navigator.share) {
-    navigator.share({ text: msg }).catch(() => {});
-  } else if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(code)
-      .then(() => toast('📋 Código copiado! Cole no WhatsApp para o amigo.', 3.5))
-      .catch(() => { if (typeof prompt === 'function') prompt('Copie o código do desafio:', code); });
-  } else if (typeof prompt === 'function') {
-    prompt('Copie o código do desafio:', code);
+function compartilharCodigo() {                   // mostra a caixa com o código
+  const code = fazerCodigo(meuResultado());
+  const box = (typeof document !== 'undefined') && document.getElementById('codigoBox');
+  const ta = (typeof document !== 'undefined') && document.getElementById('codigoTxt');
+  if (!box || !ta) { if (typeof prompt === 'function') prompt('Copie o código do desafio:', code); return; }
+  ta.value = code;
+  box.style.display = 'flex';
+  setTimeout(() => { try { ta.focus(); ta.select(); ta.setSelectionRange(0, code.length); } catch (e) {} }, 40);
+}
+function fecharCodigo() {
+  const box = (typeof document !== 'undefined') && document.getElementById('codigoBox');
+  if (box) box.style.display = 'none';
+}
+function copiarCodigo() {
+  const ta = document.getElementById('codigoTxt'), b = document.getElementById('codigoCopiar');
+  if (!ta) return;
+  try { ta.focus(); ta.select(); ta.setSelectionRange(0, ta.value.length); } catch (e) {}
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) {}
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try { navigator.clipboard.writeText(ta.value).then(() => {}, () => {}); } catch (e) {}
   }
+  if (b) { b.textContent = ok ? '✓ COPIADO!' : '✓ SELECIONADO (Ctrl+C)';
+           setTimeout(() => { b.textContent = '📋 COPIAR'; }, 1900); }
+}
+function shareCodigo() {
+  const ta = document.getElementById('codigoTxt'); if (!ta) return;
+  const msg = 'Te desafio no CANA TYCOON! 🚜 Cole este codigo no jogo (ENTRAR COM CODIGO): ' + ta.value;
+  if (navigator.share) navigator.share({ text: msg }).catch(() => {});
+  else copiarCodigo();
 }
 
 function desenharMenu() {
@@ -3689,6 +3746,20 @@ try {
 if (nomeInput) {
   nomeInput.addEventListener('keydown', e => e.stopPropagation());
   nomeInput.addEventListener('pointerdown', e => e.stopPropagation());
+}
+{ const cbCopiar = document.getElementById('codigoCopiar');
+  const cbShare = document.getElementById('codigoShare');
+  const cbFechar = document.getElementById('codigoFechar');
+  const cbBox = document.getElementById('codigoBox');
+  const cbTxt = document.getElementById('codigoTxt');
+  if (cbCopiar) cbCopiar.addEventListener('click', e => { e.stopPropagation(); copiarCodigo(); });
+  if (cbShare) cbShare.addEventListener('click', e => { e.stopPropagation(); shareCodigo(); });
+  if (cbFechar) cbFechar.addEventListener('click', e => { e.stopPropagation(); fecharCodigo(); });
+  if (cbBox) cbBox.addEventListener('pointerdown', e => e.stopPropagation());
+  if (cbTxt) { cbTxt.addEventListener('keydown', e => e.stopPropagation());
+               cbTxt.addEventListener('pointerdown', e => e.stopPropagation()); }
+  // esconde o botão COMPARTILHAR se o navegador não suporta share
+  if (cbShare && !(typeof navigator !== 'undefined' && navigator.share)) cbShare.style.display = 'none';
 }
 let tAnt = 0;
 function loop(ts) {
