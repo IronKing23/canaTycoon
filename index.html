@@ -219,6 +219,39 @@ function sorteioPesado(lista) {                 // lista de [..., peso em i=2]
   return lista[0];
 }
 
+/* ═══════════════════════════ DUELO: semente + códigos ══════════════
+   Para os dois jogarem a MESMA safra, o setup do mundo e o sorteio de
+   cada dia usam um gerador determinístico (mulberry32). A jogabilidade
+   momento-a-momento continua no Math.random real. */
+let _semRng = null;                              // gerador semeado persistente
+function fazerRng(seed) {
+  let a = (seed >>> 0) || 1;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function comSemente(fn) {                         // roda fn com o RNG semeado
+  if (!_semRng) return fn();
+  const real = Math.random;
+  Math.random = _semRng;
+  try { return fn(); } finally { Math.random = real; }
+}
+function fazerCodigo(o) {
+  const json = JSON.stringify(o);
+  try { return 'CANA1' + btoa(unescape(encodeURIComponent(json))); }
+  catch (e) { return 'CANA1' + btoa(json); }
+}
+function lerCodigo(str) {
+  if (!str) return null;
+  const m = String(str).match(/CANA1([A-Za-z0-9+/=]+)/);
+  if (!m) return null;
+  try { return JSON.parse(decodeURIComponent(escape(atob(m[1])))); }
+  catch (e) { try { return JSON.parse(atob(m[1])); } catch (e2) { return null; } }
+}
+
 /* ══════════════════════════════════════════════════════ canvas ═════ */
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -263,6 +296,7 @@ const G = {
   litrosAbastecidosHoje: 0, defensivosHoje: 0, cortesSeguidosMax: 0,
   nomeJogador: 'OPERADOR',
   diasCampanha: 2,
+  duelo: null,                       // { semente, dias, oponente } quando em desafio
   atrasoProxDia: 0,
   reforma: null,
   stats: { ganho: 0, gasto: 0, minTrab: 0, cortes: 0, prem: 0, capis: 0,
@@ -765,10 +799,10 @@ function novaCapi() {
       const a = rand(0, 6.28), d = rand(1.25, 2.1);
       x = clamp(L.x + Math.cos(a) * L.rx * d, 80, MW - 80);
       y = clamp(L.y + Math.sin(a) * L.ry * d, 80, MH - 80);
-    } while (dist2(x, y, jog.x, jog.y) < 300 ** 2 && ++t < 40);
+    } while (dist2(x, y, MW / 2, MH / 2 + 120) < 300 ** 2 && ++t < 40);
   } else {
     do { x = rand(120, MW - 120); y = rand(120, MH - 120); }
-    while ((!lugarLivre(x, y, 40) || dist2(x, y, jog.x, jog.y) < 300 ** 2) && ++t < 80);
+    while ((!lugarLivre(x, y, 40) || dist2(x, y, MW / 2, MH / 2 + 120) < 300 ** 2) && ++t < 80);
   }
   return { x, y, ang: rand(0, 6.28), anda: false, dorme: false, estT: rand(1, 3), frame: rand(0, 9), cd: 0 };
 }
@@ -1040,6 +1074,10 @@ function iniciarJogo() {
   try { localStorage.setItem(CFG.CHAVE_NOME, G.nomeJogador); } catch (e) {}
   G.diasCampanha = clamp(G.diasCampanha || CFG.DIAS_PADRAO, 1, CFG.DIAS_MAX);
   try { localStorage.setItem(CFG.CHAVE_DIAS, G.diasCampanha); } catch (e) {}
+  if (G.duelo) {                                  // safra semeada = mesma p/ os dois
+    G.diasCampanha = clamp(G.duelo.dias || CFG.DIAS_PADRAO, 1, CFG.DIAS_MAX);
+    _semRng = fazerRng(G.duelo.semente);
+  } else _semRng = null;
   G.dia = 1; G.grana = CFG.GRANA_INICIAL; G.picoGrana = CFG.GRANA_INICIAL; G.novoRec = false;
   G.stats = { ganho: 0, gasto: 0, minTrab: 0, cortes: 0, prem: 0, capis: 0,
               investido: 0, retirado: 0, mecanicos: 0 };
@@ -1058,7 +1096,7 @@ function iniciarJogo() {
   G.bolsa = { preco: CFG.BOLSA_PRECO_INI, var: 0, cotas: 0, hist: [CFG.BOLSA_PRECO_INI] };
   G._dicaB = false;
   G._gAnt = G.grana; G._gPulso = 0;
-  gerarMundo(); plantarCampoInicial(); sortearDia();
+  comSemente(() => { gerarMundo(); plantarCampoInicial(); sortearDia(); });
   G.fase = 'colheita'; G.pausa = false; G.ajuda = false;
 }
 
@@ -1879,11 +1917,13 @@ function irPlantio() {                            // oficina → plantio (24h co
   canas.length = 0; gLimpar(); fogos.length = 0; pragas.length = 0;
   G.fase = 'plantio'; G.plantadasHoje = 0; G.mudaPremium = false;
   G.hora = CFG.HORA_INI; G._avisoPl = false; G._pl2h = false;
-  G.chuva = { hoje: Math.random() < 0.45, ini: 0, fim: 0, ativa: false };
-  if (G.chuva.hoje) { G.chuva.ini = rand(10 * 60, 26 * 60); G.chuva.fim = G.chuva.ini + rand(90, 180); }
-  sortearEventoPlantio();                          // << clima do plantio (pode mexer na cota/chuva)
-  if (G._chuvaForca) { G.chuva = { hoje: true, ini: 6 * 60, fim: 30 * 60, ativa: false }; }
-  sortearContratosPlantio();
+  comSemente(() => {
+    G.chuva = { hoje: Math.random() < 0.45, ini: 0, fim: 0, ativa: false };
+    if (G.chuva.hoje) { G.chuva.ini = rand(10 * 60, 26 * 60); G.chuva.fim = G.chuva.ini + rand(90, 180); }
+    sortearEventoPlantio();                        // << clima do plantio (pode mexer na cota/chuva)
+    if (G._chuvaForca) { G.chuva = { hoje: true, ini: 6 * 60, fim: 30 * 60, ativa: false }; }
+    sortearContratosPlantio();
+  });
   toast('🌱 PLANTIO · cota ' + G.metaPlantio + ' mudas até 06:00 (24h = 3 min!)', 4);
   if (G.evento && G.evento.id !== 'pl_normal')
     toast(G.evento.icone + ' ' + G.evento.nome + ' — ' + G.evento.desc, 5);
@@ -1903,7 +1943,7 @@ function encerrarPlantio() {
     }
   plantios.length = 0;
   G.dia++;
-  sortearDia();
+  comSemente(sortearDia);
   if (re) toast('🌱 A soqueira rebrotou ' + re + ' touceiras de graça!', 3);
   G.fase = 'colheita';
 }
@@ -2896,9 +2936,55 @@ function painel(wp, hp) {
   return { x, y };
 }
 
+function meuResultado() {
+  return {
+    v: 1, s: (G.duelo ? G.duelo.semente : 0), d: G.diasCampanha,
+    n: (G.nomeJogador || 'OPERADOR').slice(0, 12),
+    g: Math.floor(G.grana + bolsaValor()),
+    dd: G.diasFinal || 0, c: G.stats.cortes || 0,
+    w: (G.fimMotivo === 'vitoria') ? 1 : 0,
+  };
+}
+function criarDesafio() {
+  const inp = document.getElementById('nome');
+  if (inp) { G.nomeJogador = ((inp.value || '').trim().toUpperCase().slice(0, 12)) || 'OPERADOR';
+             try { localStorage.setItem(CFG.CHAVE_NOME, G.nomeJogador); } catch (e) {} }
+  G.duelo = { semente: (Math.random() * 1e9) | 0, dias: G.diasCampanha, oponente: null };
+  iniciarJogo();
+  toast('🏆 DESAFIO CRIADO! Jogue e, no fim, envie seu código ao amigo.', 4.5);
+}
+function entrarDesafio() {
+  const inp = document.getElementById('nome');
+  if (inp) { G.nomeJogador = ((inp.value || '').trim().toUpperCase().slice(0, 12)) || 'OPERADOR';
+             try { localStorage.setItem(CFG.CHAVE_NOME, G.nomeJogador); } catch (e) {} }
+  const code = (typeof prompt === 'function') ? prompt('Cole aqui o código do desafio do seu amigo:') : '';
+  const o = lerCodigo(code);
+  if (!o || o.s == null) { toast('❌ Código inválido ou vazio.'); SFX.multa(); return; }
+  G.duelo = { semente: o.s, dias: o.d || 2,
+              oponente: { n: o.n || 'RIVAL', g: o.g || 0, dd: o.dd || 0, c: o.c || 0, w: o.w || 0 } };
+  G.diasCampanha = clamp(o.d || 2, 1, CFG.DIAS_MAX);
+  iniciarJogo();
+  toast('⚔️ DUELO vs ' + (o.n || 'RIVAL') + '! Mesma safra dele — bata os ' + $(o.g || 0) + '!', 5);
+}
+function compartilharCodigo() {
+  const r = meuResultado(), code = fazerCodigo(r);
+  const msg = 'Te desafio no CANA TYCOON! 🚜 Minha safra rendeu ' + $(r.g) +
+              ' em ' + r.dd + ' dia(s). Jogue a MESMA safra e me supere — ' +
+              'cole este codigo no jogo (menu -> ENTRAR COM CODIGO): ' + code;
+  if (typeof navigator !== 'undefined' && navigator.share) {
+    navigator.share({ text: msg }).catch(() => {});
+  } else if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(code)
+      .then(() => toast('📋 Código copiado! Cole no WhatsApp para o amigo.', 3.5))
+      .catch(() => { if (typeof prompt === 'function') prompt('Copie o código do desafio:', code); });
+  } else if (typeof prompt === 'function') {
+    prompt('Copie o código do desafio:', code);
+  }
+}
+
 function desenharMenu() {
   ctx.fillStyle = 'rgba(8,12,6,.55)'; ctx.fillRect(0, 0, W, H);
-  const { x, y } = painel(700, 484);
+  const { x, y } = painel(700, 528);
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd94d';
   ctx.font = '700 40px "Courier New", monospace';
@@ -2954,16 +3040,23 @@ function desenharMenu() {
   }
 
   ctx.fillStyle = '#9fbf8a'; ctx.font = '700 12px "Courier New", monospace';
-  ctx.fillText('\ud83c\udfc6 Recorde: ' + G.recDias + ' dia(s) \u00b7 pico ' + $(G.recGrana), W / 2, y + 400);
+  ctx.fillText('\ud83c\udfc6 Recorde: ' + G.recDias + ' dia(s) \u00b7 pico ' + $(G.recGrana), W / 2, y + 392);
 
   ctx.fillStyle = '#ffd94d';
   ctx.globalAlpha = 0.6 + 0.4 * Math.sin(G.t * 4);
   ctx.font = '700 16px "Courier New", monospace';
-  ctx.fillText('ESPA\u00c7O ou TOQUE para come\u00e7ar a safra', W / 2, y + 424);
-  ctx.globalAlpha = 1; ctx.textAlign = 'left';
-  chip(x + 50, y + 440, 186, 34, '\ud83d\udcd6 COMO JOGAR  H', null, true,
+  ctx.fillText('ESPA\u00c7O ou TOQUE para jogar SOZINHO', W / 2, y + 414);
+  ctx.globalAlpha = 1;
+
+  // ---- DUELO (competição por código) ----
+  ctx.fillStyle = '#8fd6e8'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('\u2694\ufe0f  OU DESAFIE UM AMIGO (mesma safra, quem lucra mais vence)', W / 2, y + 440);
+  ctx.textAlign = 'left';
+  chip(x + 50, y + 452, 288, 40, '\ud83c\udfc6 CRIAR DESAFIO', 'gera um código p/ enviar', true, criarDesafio);
+  chip(x + 362, y + 452, 288, 40, '\ud83c\udf9f\ufe0f ENTRAR COM C\u00d3DIGO', 'cole o c\u00f3digo do amigo', true, entrarDesafio);
+  chip(x + 50, y + 500, 288, 26, '\ud83d\udcd6 COMO JOGAR  H', null, true,
        () => { G.ajuda = true; G.ajudaPag = 0; });
-  chip(x + 464, y + 440, 186, 34, (G.telaCheia ? '\u22a1 SAIR DA TELA' : '\u26f6 TELA CHEIA  F'), null, true,
+  chip(x + 362, y + 500, 288, 26, (G.telaCheia ? '\u22a1 SAIR DA TELA' : '\u26f6 TELA CHEIA  F'), null, true,
        alternarTelaCheia);
 }
 
@@ -3260,6 +3353,19 @@ const AJUDA_PAGS = [
     'O PLANTIO também tem eventos (lua cheia, solo fértil, geada,',
     'feira de mudas, alerta de broca) e tarefas próprias de plantio.',
   ]},
+  { t: '⚔️ DUELO DE SAFRA (2 jogadores)', l: [
+    'Dá para desafiar um amigo — mesmo sem internet no jogo!',
+    'No menu: CRIAR DESAFIO gera uma safra semeada e, no fim,',
+    'um CÓDIGO. Envie esse código pelo WhatsApp para o amigo.',
+    'Ele escolhe ENTRAR COM CÓDIGO, cola o texto, e joga a',
+    'EXATA MESMA safra que você: mesmas pedras, lagoas, eventos,',
+    'contratos e clima — só o talento decide!',
+    'No fim, o jogo mostra o PLACAR: seu patrimônio × o do rival,',
+    'e quem lucrou mais VENCE. Ele pode te mandar o código de',
+    'resposta para você ver o resultado do duelo também.',
+    '',
+    'Dica: combinem os mesmos DIAS DE SAFRA antes de começar.',
+  ]},
   { t: '🏁 CAMPANHA & RANKING', l: [
     'A safra é a CAMPANHA que você escolheu (1 a 5 dias). Bata a',
     'meta do último dia para VENCER a temporada.',
@@ -3368,6 +3474,48 @@ function desenharFim() {
     ctx.fillText('(inclui ' + G.bolsa.cotas + ' cota(s) de CANA11 = ' + $(bolsaValor()) + ')', col1, sy + 118);
   }
 
+  if (G.duelo) {                                                   // ===== PLACAR DO DUELO =====
+    const op = G.duelo.oponente;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#8fd6e8'; ctx.font = '700 17px "Courier New", monospace';
+    ctx.fillText('⚔️  DUELO DE SAFRA', W / 2, sy + 150);
+    if (op) {
+      const venci = patr > op.g, empate = patr === op.g;
+      const mx = W / 2 - 148, ox = W / 2 + 148;
+      ctx.font = '700 13px "Courier New", monospace';
+      ctx.fillStyle = venci ? '#7cd85a' : '#cfe0b8';
+      ctx.fillText('VOCÊ · ' + (G.nomeJogador || 'VOCÊ').slice(0, 10), mx, sy + 178);
+      ctx.font = '700 24px "Courier New", monospace'; ctx.fillStyle = venci ? '#ffd94d' : '#eef2e0';
+      ctx.fillText($(patr), mx, sy + 204);
+      ctx.fillStyle = (!venci && !empate) ? '#7cd85a' : '#cfe0b8'; ctx.font = '700 13px "Courier New", monospace';
+      ctx.fillText(op.n.slice(0, 12), ox, sy + 178);
+      ctx.font = '700 24px "Courier New", monospace'; ctx.fillStyle = (!venci && !empate) ? '#ffd94d' : '#eef2e0';
+      ctx.fillText($(op.g), ox, sy + 204);
+      ctx.fillStyle = '#ff8f3e'; ctx.font = '700 16px "Courier New", monospace';
+      ctx.fillText('VS', W / 2, sy + 196);
+      const pulse = 1 + Math.sin(G.t * 5) * 0.05;
+      ctx.save(); ctx.translate(W / 2, sy + 240); ctx.scale(pulse, pulse);
+      ctx.font = '700 22px "Courier New", monospace';
+      ctx.fillStyle = venci ? '#ffd94d' : empate ? '#cfe0b8' : '#ff7a5e';
+      ctx.fillText(venci ? '🏆 VOCÊ VENCEU!' : empate ? '🤝 EMPATE!' : '😤 VOCÊ PERDEU', 0, 0);
+      ctx.restore();
+      ctx.font = '11px "Courier New", monospace'; ctx.fillStyle = '#9fbf8a';
+      ctx.fillText('patrimônio final na mesma safra · você ' + (G.diasFinal||0) + 'd × ' + (op.dd||0) + 'd rival', W / 2, sy + 262);
+    } else {
+      ctx.fillStyle = '#eef2e0'; ctx.font = '700 14px "Courier New", monospace';
+      ctx.fillText('Seu desafio está pronto! 🎉', W / 2, sy + 186);
+      ctx.fillStyle = '#9fbf8a'; ctx.font = '12px "Courier New", monospace';
+      ctx.fillText('Envie o código abaixo — o amigo joga a MESMA safra', W / 2, sy + 208);
+      ctx.fillText('e tenta superar o seu ' + $(patr) + '.', W / 2, sy + 226);
+    }
+    if (G.fimT > 0.5) {
+      chip(W / 2 - 302, y + 440, 296, 34, '📤 ENVIAR MEU CÓDIGO', 'compartilhar / responder', true, compartilharCodigo);
+      chip(W / 2 + 6, y + 440, 296, 34, '🔄 VOLTAR AO MENU', null, true, () => { G.duelo = null; G.fase = 'menu'; });
+    }
+    ctx.textAlign = 'left';
+    return;
+  }
+
   ctx.fillStyle = '#ffd94d'; ctx.font = '700 15px "Courier New", monospace';   // ranking
   ctx.fillText('🏅 RANKING', col1, sy + 148);
   const rank = G._rank || [];
@@ -3452,7 +3600,7 @@ window.addEventListener('keydown', e => {
     case 'KeyD': case 'ArrowRight': kb.dir = true; break;
     case 'Space':
       if (G.fase === 'menu') iniciarJogo();
-      else if (G.fase === 'fim' && G.fimT > 0.6) iniciarJogo();
+      else if (G.fase === 'fim' && G.fimT > 0.6 && !G.duelo) iniciarJogo();
       else if (G.fase === 'plantio') plantar();
       else if (G.fase === 'reforma') {
         const R = G.reforma, pronto = R && !R.rodando && Object.values(jog.comp).every(v => v > 0);
@@ -3460,7 +3608,7 @@ window.addEventListener('keydown', e => {
       }
       break;
     case 'Enter':
-      if (G.fase === 'fim' && G.fimT > 0.6) iniciarJogo();
+      if (G.fase === 'fim' && G.fimT > 0.6 && !G.duelo) iniciarJogo();
       else if (G.fase === 'oficina') irPlantio();
       else if (G.fase === 'reforma') {
         const R = G.reforma, pronto = R && !R.rodando && Object.values(jog.comp).every(v => v > 0);
@@ -3514,7 +3662,7 @@ canvas.addEventListener('pointerdown', e => {
     }
   }
   if (G.fase === 'menu') { iniciarJogo(); return; }
-  if (G.fase === 'fim' && G.fimT > 0.6) { iniciarJogo(); return; }
+  if (G.fase === 'fim' && G.fimT > 0.6 && !G.duelo) { iniciarJogo(); return; }
   if (G.fase === 'plantio' && TOQUE) plantar();
 });
 canvas.addEventListener('pointermove', e => {
@@ -3582,7 +3730,9 @@ globalThis.__T = {
          estimativa, danoComp, curarPts, fimVitoria, salvarRanking, recalcSaude,
          sortearEvento, sortearEventoPlantio, sortearContratos, sortearContratosPlantio,
          progContrato, progContratoValor, contratoFeito, verificarComboContratos,
-         listaContratos, EVENTOS, EVENTOS_PLANTIO, CONTRATOS, CONTRATOS_PLANTIO, sortearDia },
+         listaContratos, EVENTOS, EVENTOS_PLANTIO, CONTRATOS, CONTRATOS_PLANTIO, sortearDia,
+         fazerRng, comSemente, fazerCodigo, lerCodigo, meuResultado, criarDesafio,
+         entrarDesafio, compartilharCodigo, gerarMundo, plantarCampoInicial },
   dpad,
 };
 </script>
