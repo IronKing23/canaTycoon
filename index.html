@@ -75,6 +75,14 @@
   }
   #frame:-webkit-full-screen canvas { width:min(100vw, 177.77vh); height:auto; border-radius:0; }
   footer { font-size:11px; color:#8aa178; letter-spacing:.5px; text-align:center; user-select:none; }
+  /* celular deitado: some com o "cromo" e o canvas ocupa a tela toda */
+  @media (max-height: 560px) and (orientation: landscape) {
+    body { padding:0; gap:0; }
+    h1, footer { display:none; }
+    #frame { max-width:100vw; width:auto; border-width:0; border-radius:0; box-shadow:none; }
+    #frame canvas { height:100vh; width:auto; max-width:100vw; border-radius:0; }
+    #frame::before, #frame::after { border-radius:0; }
+  }
   footer b { color:#cfe0b8; }
 </style>
 </head>
@@ -148,6 +156,7 @@ const CFG = {
   BOLSA_PRECO_INI: 100, BOLSA_TAXA_RAPIDA: 0.10,
 
   DIAS_PADRAO: 2, DIAS_MAX: 5,        // ciclo de safra escolhido no início
+  ZOOM_MOBILE: 1.5,                  // câmera dá zoom no celular (tudo maior)
   CHAVE_DIAS: 'canaTycoon_dias',
   PLANTIO_MIN_POR_SEG: 8,            // plantio: 24h de jogo em 3 min reais
   GUINCHO: 60,                       // reboque até a Reforma Linear
@@ -280,6 +289,7 @@ const canas = [], pedras = [], capis = [], fogos = [], lamas = [],
 const cam = { x: 0, y: 0 };
 const dpad = { fwd: false, re: false, esq: false, dir: false };
 const TOQUE = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+const MOBILE = TOQUE;                             // layout/zoom próprios p/ toque
 </script>
 <script>
 'use strict';
@@ -2016,13 +2026,16 @@ function tintaDia(h) {                            // cor do dia (amanhecer/entar
 
 function render() {
   botoesTela.length = 0;
-  cam.x = clamp(jog.x - W / 2, 0, MW - W);
-  cam.y = clamp(jog.y - H / 2, 0, MH - H);
+  const Z = MOBILE ? CFG.ZOOM_MOBILE : 1;
+  const vw = W / Z, vh = H / Z;                     // janela de mundo visível
+  cam.x = clamp(jog.x - vw / 2, 0, MW - vw);
+  cam.y = clamp(jog.y - vh / 2, 0, MH - vh);
   const escuro = G.fase === 'colheita' ? clamp((G.hora - 18 * 60) / 150, 0, 1) * 0.72 : 0;
 
   ctx.save();
   if ((G.tremor || 0) > 0)
     ctx.translate(rand(-1, 1) * G.tremor * 12, rand(-1, 1) * G.tremor * 12);
+  ctx.scale(Z, Z);
   ctx.translate(-cam.x, -cam.y);
 
   ctx.drawImage(CHAO, 0, 0);
@@ -2266,13 +2279,13 @@ function render() {
     luzc.fillStyle = 'rgba(8, 12, 40,' + escuro + ')';
     luzc.fillRect(0, 0, W, H);
     luzc.globalCompositeOperation = 'destination-out';
-    const px = jog.x - cam.x, py = jog.y - cam.y;
-    let g = luzc.createRadialGradient(px, py, 10, px, py, 120);      // luz ambiente
+    const px = (jog.x - cam.x) * Z, py = (jog.y - cam.y) * Z;
+    let g = luzc.createRadialGradient(px, py, 10 * Z, px, py, 120 * Z); // luz ambiente
     g.addColorStop(0, 'rgba(255,255,255,.9)'); g.addColorStop(1, 'rgba(255,255,255,0)');
     luzc.fillStyle = g;
-    luzc.beginPath(); luzc.arc(px, py, 120, 0, 7); luzc.fill();
+    luzc.beginPath(); luzc.arc(px, py, 120 * Z, 0, 7); luzc.fill();
     luzc.save();                                                     // cone do farol
-    luzc.translate(px, py); luzc.rotate(jog.ang);
+    luzc.translate(px, py); luzc.rotate(jog.ang); luzc.scale(Z, Z);
     g = luzc.createLinearGradient(0, 0, 250, 0);
     g.addColorStop(0, 'rgba(255,255,255,.95)'); g.addColorStop(1, 'rgba(255,255,255,0)');
     luzc.fillStyle = g;
@@ -2280,11 +2293,11 @@ function render() {
     luzc.moveTo(22, -10); luzc.lineTo(250, -78); luzc.lineTo(250, 78); luzc.lineTo(22, 10);
     luzc.closePath(); luzc.fill();
     luzc.restore();
-    const ux = USINA.x + USINA.w / 2 - cam.x, uy = USINA.y + USINA.h - cam.y; // luz da usina
-    g = luzc.createRadialGradient(ux, uy, 10, ux, uy, 150);
+    const ux = (USINA.x + USINA.w / 2 - cam.x) * Z, uy = (USINA.y + USINA.h - cam.y) * Z; // usina
+    g = luzc.createRadialGradient(ux, uy, 10 * Z, ux, uy, 150 * Z);
     g.addColorStop(0, 'rgba(255,255,255,.6)'); g.addColorStop(1, 'rgba(255,255,255,0)');
     luzc.fillStyle = g;
-    luzc.beginPath(); luzc.arc(ux, uy, 150, 0, 7); luzc.fill();
+    luzc.beginPath(); luzc.arc(ux, uy, 150 * Z, 0, 7); luzc.fill();
     luzc.globalCompositeOperation = 'source-over';
     ctx.drawImage(LUZ, 0, 0);
   }
@@ -2338,8 +2351,246 @@ function chip(x, y, w, h, rot, sub, ativo, cb) {
   if (ativo && cb) botoesTela.push({ x, y, w, h, cb });
 }
 
+function btnM(x, y, w, h, icone, sub, ativo, cor, cb) {   // botão grande (mobile)
+  ctx.fillStyle = ativo ? 'rgba(20,30,16,.92)' : 'rgba(20,26,18,.5)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = ativo ? (cor || '#f0c814') : '#46523c'; ctx.lineWidth = 2.5;
+  ctx.strokeRect(x, y, w, h);
+  ctx.textAlign = 'center';
+  ctx.globalAlpha = ativo ? 1 : 0.45;
+  ctx.font = '27px "Segoe UI", sans-serif';
+  ctx.fillStyle = '#fff';
+  ctx.fillText(icone, x + w / 2, y + (sub ? h / 2 + 2 : h / 2 + 9));
+  if (sub) {
+    ctx.font = '700 12px "Courier New", monospace';
+    ctx.fillStyle = ativo ? '#cfe0b8' : '#6d7a62';
+    ctx.fillText(sub, x + w / 2, y + h - 7);
+  }
+  ctx.globalAlpha = 1; ctx.textAlign = 'left';
+  if (ativo && cb) botoesTela.push({ x, y, w, h, cb });
+}
+function iconeTopo(x, rot, cb) {                   // ícone utilitário grande no topo
+  ctx.fillStyle = 'rgba(18,26,14,.75)'; ctx.fillRect(x, 8, 42, 42);
+  ctx.strokeStyle = 'rgba(220,230,200,.55)'; ctx.lineWidth = 2; ctx.strokeRect(x, 8, 42, 42);
+  ctx.fillStyle = '#eef2e0'; ctx.font = '700 22px "Courier New", monospace'; ctx.textAlign = 'center';
+  ctx.fillText(rot, x + 21, 37); ctx.textAlign = 'left';
+  botoesTela.push({ x, y: 8, w: 42, h: 42, cb });
+}
+
+function desenharHUDMobile() {
+  const worst = Math.min(jog.comp.hidraulico, jog.comp.rodante, jog.comp.corte, jog.comp.motor);
+  const colheita = G.fase === 'colheita';
+
+  // ---------- FAIXA SUPERIOR (alta, fontes grandes) ----------
+  const gTopo = ctx.createLinearGradient(0, 0, 0, 100);
+  gTopo.addColorStop(0, 'rgba(16,24,12,.94)'); gTopo.addColorStop(1, 'rgba(6,10,5,.86)');
+  ctx.fillStyle = gTopo; ctx.fillRect(0, 0, W, 100);
+  ctx.fillStyle = '#3d5228'; ctx.fillRect(0, 100, W, 2);
+  ctx.fillStyle = 'rgba(240,200,20,.35)'; ctx.fillRect(0, 102, W, 1);
+
+  // grana
+  const p = 1 + (G._gPulso || 0) * 0.9;
+  ctx.fillStyle = '#8a6b00'; ctx.beginPath(); ctx.arc(34, 30, 15 * p, 0, 7); ctx.fill();
+  ctx.fillStyle = '#ffd94d'; ctx.beginPath(); ctx.arc(32, 28, 15 * p, 0, 7); ctx.fill();
+  ctx.fillStyle = '#8a6b00'; ctx.font = '700 20px "Courier New", monospace';
+  ctx.fillText('$', 25, 35);
+  ctx.font = '700 34px "Courier New", monospace'; ctx.fillStyle = '#ffd94d';
+  ctx.fillText($(G.grana).slice(1), 56, 40);
+
+  // DIA + relógio (centro, GRANDE — prazo das 22:00)
+  ctx.textAlign = 'center';
+  ctx.font = '700 16px "Courier New", monospace'; ctx.fillStyle = '#cfe0b8';
+  ctx.fillText('DIA ' + G.dia + '/' + G.diasCampanha, W / 2, 22);
+  const tarde = G.hora >= 21 * 60;
+  ctx.font = '700 34px "Courier New", monospace';
+  ctx.fillStyle = tarde && Math.floor(G.t * 4) % 2 === 0 ? '#ff5a4a' : '#eef2e0';
+  ctx.fillText(G.fase === 'plantio' ? hhmm(G.hora) : hhmm(G.hora), W / 2, 50);
+  // tendência + frenesi
+  const td = G.tendencia;
+  ctx.font = '700 17px "Courier New", monospace';
+  ctx.fillStyle = td[0] === 'ALTA' ? '#7cd85a' : td[0] === 'BAIXA' ? '#ff7a5e' : '#cfd6dc';
+  ctx.fillText(td[3] + ' ' + td[0] + (G.frenesi.ativa ? '  ⚡x' + CFG.FRENESI_MULT : ''), W / 2, 72);
+  ctx.textAlign = 'left';
+
+  // ícones utilitários (topo direito, grandes)
+  iconeTopo(W - 50, mudo ? '🔇' : '🔊', alternarMudo);
+  iconeTopo(W - 98, G.pausa ? '▶' : '⏸', () => { G.pausa = !G.pausa; });
+  iconeTopo(W - 146, G.telaCheia ? '⊡' : '⛶', alternarTelaCheia);
+  iconeTopo(W - 194, '?', () => { G.ajuda = true; G.ajudaPag = 0; });
+
+  // ---------- LINHA 2: barras grandes ----------
+  const y2 = 64, bh = 26;
+  // meta / plantio
+  ctx.font = '700 12px "Courier New", monospace'; ctx.fillStyle = '#9fb98a';
+  ctx.fillText(colheita ? '🎯 META' : '🌱 PLANTIO', 14, y2 - 2);
+  if (colheita) {
+    barra(14, y2, 250, bh, G.vendidoHoje / G.meta, G.vendidoHoje >= G.meta ? '#7cd85a' : '#f0c814', false);
+    ctx.fillStyle = '#eef2e0'; ctx.font = '700 14px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText($(G.vendidoHoje) + ' / ' + $(G.meta), 139, y2 + 18); ctx.textAlign = 'left';
+  } else {
+    barra(14, y2, 250, bh, G.plantadasHoje / G.metaPlantio, '#7cd85a', false);
+    ctx.fillStyle = '#eef2e0'; ctx.font = '700 14px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText(G.plantadasHoje + ' / ' + G.metaPlantio + ' mudas', 139, y2 + 18); ctx.textAlign = 'left';
+  }
+  // diesel
+  ctx.font = '700 12px "Courier New", monospace'; ctx.fillStyle = '#9fb98a';
+  ctx.fillText('⛽', 286, y2 - 2);
+  const fCom = jog.comb / uv('tanque');
+  barra(310, y2, 150, bh, fCom, fCom > .5 ? '#59aa48' : fCom > .22 ? '#f0c814' : '#e04b3a', fCom <= .2);
+  // saúde (pior componente)
+  ctx.fillStyle = '#9fb98a'; ctx.fillText('🩺', 476, y2 - 2);
+  const fS = worst / 100;
+  barra(500, y2, 150, bh, fS, fS > .5 ? '#59aa48' : fS > .25 ? '#f0c814' : '#e04b3a', fS <= .2);
+  if (worst <= 0) { ctx.fillStyle = '#ff5a4a'; ctx.font = '700 16px "Courier New", monospace'; ctx.fillText('✖', 566, y2 + 19); }
+  // carga
+  ctx.fillStyle = jog.cargaUn >= uv('cacamba') ? '#ff9a5e' : '#eef2e0';
+  ctx.font = '700 20px "Courier New", monospace';
+  ctx.fillText('📦 ' + jog.cargaUn + '/' + uv('cacamba'), 668, y2 + 14);
+  ctx.font = '700 13px "Courier New", monospace'; ctx.fillStyle = '#ffe27a';
+  ctx.fillText('~' + $(jog.cargaValor * G.tendencia[1] * (G.frenesi.ativa ? CFG.FRENESI_MULT : 1) * (G._mPreco || 1)), 668, y2 + 30);
+
+  // ---------- CONTRATOS (texto grande, à esquerda) ----------
+  const lista = listaContratos();
+  ctx.font = '700 15px "Courier New", monospace';
+  let cy = 118;
+  for (const c of lista) {
+    let prog;
+    if (c.id === 'pacifista') prog = c.falhou ? '✗' : (c.feito ? '✓' : 'ok');
+    else if (c.id === 'combo') prog = 'x' + c.prog.toFixed(1) + '/' + c.valorAlvo.toFixed(1) + (c.feito ? ' ✓' : '');
+    else if (c.id === 'combustivel') prog = Math.floor(c.prog) + '/' + c.alvo + 'L' + (c.feito ? ' ✓' : '');
+    else if (c.tempo) prog = c.feito ? '✓' : (c.falhou ? '✗' : '⏳');
+    else prog = Math.min(Math.floor(c.prog), c.alvo) + '/' + c.alvo + (c.feito ? ' ✓' : '');
+    const txt = '📜 ' + c.desc + '  ' + prog;
+    const bonusTxt = '+' + $(Math.round(c.bonus * (G._mBonus || 1)));
+    const tw = Math.min(ctx.measureText(txt).width + 90, W - 220);
+    ctx.fillStyle = 'rgba(12,18,10,.85)'; ctx.fillRect(12, cy, tw, 24);
+    ctx.strokeStyle = c.feito ? '#7cd85a' : c.falhou ? '#ff6a5e' : 'rgba(240,200,20,.5)';
+    ctx.lineWidth = 1.5; ctx.strokeRect(12, cy, tw, 24);
+    ctx.fillStyle = c.feito ? '#a9e88c' : c.falhou ? '#ff8f80' : '#eef2e0';
+    ctx.fillText(txt, 20, cy + 17);
+    ctx.fillStyle = '#ffd94d';
+    ctx.fillText(bonusTxt, 20 + tw - 78, cy + 17);
+    cy += 28;
+  }
+  if (lista.length >= 2 && lista.every(c => c.feito)) {
+    ctx.fillStyle = '#ffd94d'; ctx.font = '700 14px "Courier New", monospace';
+    ctx.fillText('🌟 todas cumpridas!', 16, cy + 14);
+  }
+
+  // ---------- EVENTO DO DIA (badge) ----------
+  if (G.evento && G.evento.id !== 'normal' && !G.evento.id.endsWith('normal')) {
+    const ev = G.evento;
+    ctx.font = '700 14px "Courier New", monospace';
+    const t2 = ev.icone + ' ' + ev.nome;
+    const tw2 = ctx.measureText(t2).width + 20;
+    const by2 = cy + 24;
+    ctx.fillStyle = 'rgba(12,18,10,.85)'; ctx.fillRect(12, by2, tw2, 24);
+    ctx.strokeStyle = ev.cor; ctx.lineWidth = 1.8; ctx.strokeRect(12, by2, tw2, 24);
+    ctx.fillStyle = ev.cor; ctx.fillText(t2, 22, by2 + 17);
+  }
+
+  // ---------- RADAR (maior, topo direito) ----------
+  { const rw = 184, rh = 128, rx = W - rw - 12, ry = 112;
+    ctx.fillStyle = 'rgba(8,14,8,.85)'; ctx.fillRect(rx, ry, rw, rh);
+    ctx.strokeStyle = '#3c4a30'; ctx.lineWidth = 2; ctx.strokeRect(rx, ry, rw, rh);
+    const sx = rw / MW, sy = rh / MH;
+    ctx.fillStyle = '#2e6b7c';
+    for (const L of LAGOAS) ctx.fillRect(rx + (L.x - L.rx) * sx, ry + (L.y - L.ry) * sy, Math.max(3, L.rx * 2 * sx), Math.max(2, L.ry * 2 * sy));
+    ctx.fillStyle = '#274a1c';
+    for (const a of ARVORES) ctx.fillRect(rx + a.x * sx - 1, ry + a.y * sy - 1, 3, 3);
+    ctx.fillStyle = 'rgba(160,90,220,.9)';
+    ctx.fillRect(rx + USINA.x * sx, ry + USINA.y * sy, USINA.w * sx, USINA.h * sy);
+    ctx.fillStyle = 'rgba(240,200,20,.9)';
+    ctx.fillRect(rx + USINA.zona.x * sx, ry + USINA.zona.y * sy, Math.max(2, USINA.zona.w * sx), Math.max(2, USINA.zona.h * sy));
+    for (const c of canas) { ctx.fillStyle = c.prem ? '#ffd94d' : '#5fc046'; ctx.fillRect(rx + c.x * sx, ry + c.y * sy, 2, 2); }
+    for (const pl of plantios) { ctx.fillStyle = '#a4e08c'; ctx.fillRect(rx + pl.x * sx, ry + pl.y * sy, 2, 2); }
+    ctx.fillStyle = '#9aa0a8'; for (const pd of pedras) ctx.fillRect(rx + pd.x * sx - 1, ry + pd.y * sy - 1, 3, 3);
+    ctx.fillStyle = '#b08050'; for (const cp of capis) ctx.fillRect(rx + cp.x * sx - 1, ry + cp.y * sy - 1, 3, 3);
+    if (Math.floor(G.t * 5) % 2 === 0) { ctx.fillStyle = '#c86a2e'; for (const pr of pragas) ctx.fillRect(rx + pr.c.x * sx - 1, ry + pr.c.y * sy - 1, 3, 3); }
+    if (Math.floor(G.t * 6) % 2 === 0) { ctx.fillStyle = '#ff5030'; for (const f of fogos) ctx.fillRect(rx + f.c.x * sx - 1, ry + f.c.y * sy - 1, 3, 3); }
+    if (Math.floor(G.t * 4) % 2 === 0) { ctx.fillStyle = '#ffd94d'; for (const pc of pecas) ctx.fillRect(rx + pc.x * sx - 1, ry + pc.y * sy - 1, 3, 3); }
+    const jx = rx + jog.x * sx, jy = ry + jog.y * sy;
+    ctx.fillStyle = '#fff'; ctx.fillRect(jx - 2, jy - 2, 5, 5);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(jx, jy); ctx.lineTo(jx + Math.cos(jog.ang) * 9, jy + Math.sin(jog.ang) * 9); ctx.stroke();
+  }
+  // ticker da bolsa (sob o radar)
+  { const tx = W - 196, ty2 = 246;
+    ctx.font = '700 13px "Courier New", monospace'; ctx.fillStyle = '#eef2e0';
+    ctx.fillText('CANA11 ' + $(G.bolsa.preco), tx, ty2);
+    const vB = G.bolsa.var; ctx.fillStyle = vB >= 0 ? '#7cd85a' : '#ff7a5e';
+    ctx.fillText((vB >= 0 ? '▲+' : '▼') + Math.round(vB * 100) + '%' + (G.bolsa.cotas > 0 ? '  💼' + G.bolsa.cotas : ''), tx + 118, ty2);
+  }
+
+  // ---------- TOASTS (centro) ----------
+  let ty = 118; ctx.textAlign = 'center';
+  for (const t of toasts) {
+    const a = clamp(1 - Math.max(0, t.t - (t.dur - 0.5)) / 0.5, 0, 1);
+    ctx.globalAlpha = a; ctx.font = '700 16px "Courier New", monospace';
+    const tw = ctx.measureText(t.txt).width + 28;
+    ctx.fillStyle = 'rgba(12,18,10,.9)'; ctx.fillRect(W / 2 - tw / 2, ty - 16, tw, 26);
+    ctx.strokeStyle = 'rgba(240,200,20,.5)'; ctx.lineWidth = 1.5; ctx.strokeRect(W / 2 - tw / 2, ty - 16, tw, 26);
+    ctx.fillStyle = '#eef2e0'; ctx.fillText(t.txt, W / 2, ty + 2); ty += 32;
+  }
+  ctx.globalAlpha = 1; ctx.textAlign = 'left';
+
+  // ---------- COMBO / TURBO (barra inferior central) ----------
+  { const cx = 286, cyb = H - 34, cw = 232;
+    ctx.font = '700 14px "Courier New", monospace';
+    if (jog.turbo > 0) {
+      ctx.fillStyle = Math.floor(G.t * 8) % 2 === 0 ? '#ff7b2e' : '#ffd94d'; ctx.textAlign = 'center';
+      ctx.fillText('🔥 TURBO ' + jog.turbo.toFixed(1) + 's', cx + cw / 2, cyb - 6); ctx.textAlign = 'left';
+      barra(cx, cyb, cw, 16, jog.turbo / CFG.TURBO_DUR, '#ff7b2e', false);
+    } else if (colheita) {
+      ctx.fillStyle = '#cfe0b8'; ctx.textAlign = 'center';
+      ctx.fillText('COMBO x' + jog.combo.toFixed(1), cx + cw / 2, cyb - 6); ctx.textAlign = 'left';
+      barra(cx, cyb, cw, 16, (jog.combo - 1) / (CFG.COMBO_MAX - 1), jog.combo > 3 ? '#ff9a3e' : '#7cd85a', jog.combo >= CFG.COMBO_MAX - 0.14);
+    }
+  }
+
+  // ---------- D-PAD (grande, inferior esquerdo) ----------
+  ctx.font = '700 30px "Courier New", monospace'; ctx.textAlign = 'center';
+  for (const z of DPAD_ZONAS) {
+    const on = dpad[z.id];
+    ctx.fillStyle = on ? 'rgba(240,200,20,.55)' : 'rgba(20,28,16,.6)';
+    ctx.fillRect(z.x, z.y, z.w, z.h);
+    ctx.strokeStyle = on ? '#f0c814' : 'rgba(220,230,200,.6)'; ctx.lineWidth = 2.5;
+    ctx.strokeRect(z.x, z.y, z.w, z.h);
+    ctx.fillStyle = '#eef2e0'; ctx.fillText(z.rot, z.x + z.w / 2, z.y + z.h / 2 + 11);
+  }
+  ctx.textAlign = 'left';
+
+  // ---------- BOTÕES DE AÇÃO (grade grande, inferior direito) ----------
+  const acoes = [];
+  if (colheita) {
+    const descUsina = pertoDaUsina();
+    acoes.push(['⛽', $((uv('tanque') - jog.comb) * CFG.PRECO_LITRO * (descUsina ? 0.5 : 1)), jog.comb < uv('tanque') - 0.5, '#8ecae6', abastecer]);
+    acoes.push(['🔧', $((100 - jog.integ) * CFG.PRECO_REPARO), jog.integ < 99.5, '#8ecae6', consertar]);
+    acoes.push(['📦', 'vender', jog.cargaUn > 0, '#ffd94d', venderDrone]);
+    acoes.push(['🧪', $(CFG.DEFENSIVO_CUSTO), G.grana >= CFG.DEFENSIVO_CUSTO, '#7fd4a8', aplicarDefensivo]);
+    if (fogos.length) acoes.push(['🚒', $(CFG.PRECO_BOMBEIRO), G.grana >= CFG.PRECO_BOMBEIRO, '#ff7a5e', bombeiro]);
+    if (G.bolsa.cotas > 0) acoes.push(['📉', 'resgatar', true, '#e8c85e', resgatarBolsa]);
+  } else {
+    acoes.push(['🌱', G.mudaPremium ? 'prem' : 'normal', G.grana >= (G.mudaPremium ? CFG.MUDA_PREMIUM : CFG.MUDA_NORMAL), '#7cd85a', plantar]);
+    acoes.push(['⭐', G.mudaPremium ? '3x' : 'troca', true, '#f0c814', () => { G.mudaPremium = !G.mudaPremium; toast(G.mudaPremium ? '⭐ muda PREMIUM (3x)' : '🌱 muda normal'); }]);
+    acoes.push(['✔', 'encerrar', G.plantadasHoje >= G.metaPlantio, '#7cd85a', encerrarPlantio]);
+    acoes.push(['🧪', $(CFG.DEFENSIVO_CUSTO), G.grana >= CFG.DEFENSIVO_CUSTO, '#7fd4a8', aplicarDefensivo]);
+    if (G.bolsa.cotas > 0) acoes.push(['📉', 'resgatar', true, '#e8c85e', resgatarBolsa]);
+  }
+  const bs = 66, gap = 6, cols = 3;
+  const gridW = cols * bs + (cols - 1) * gap;
+  const bx0 = W - gridW - 12;
+  acoes.forEach((a, i) => {
+    const col = i % cols, row = (i / cols) | 0;
+    const bxp = bx0 + col * (bs + gap);
+    const byp = H - 12 - bs - row * (bs + gap);
+    btnM(bxp, byp, bs, bs, a[0], a[1], a[2], a[3], a[4]);
+  });
+}
+
 function desenharHUD() {
   if (G.fase === 'menu') return;
+  if (MOBILE) return desenharHUDMobile();
 
   const gTopo = ctx.createLinearGradient(0, 0, 0, 46);              // faixa superior
   gTopo.addColorStop(0, 'rgba(16,24,12,.92)');
@@ -2917,7 +3168,8 @@ const AJUDA_PAGS = [
     'ESPAÇO / Q ...... plantar muda · alternar normal/premium',
     'ENTER ........... oficina→plantio · encerrar o plantio',
     'P · M · H · F ... pausa · som · este manual · tela cheia',
-    'CELULAR: D-Pad e botões na tela · toque livre planta no plantio.',
+    'CELULAR (deitado): D-Pad grande à esquerda, botões grandes à',
+    'direita, HUD ampliado e câmera com zoom. Toque no campo planta.',
   ]},
   { t: '🌾 COLHEITA & VENDA', l: [
     'O cortador fica na FRENTE: passe por cima das touceiras em',
@@ -3151,7 +3403,12 @@ function desenharFim() {
 /* ═══════════════════════════════════════════════════════ input ════ */
 const kb = { fwd: false, re: false, esq: false, dir: false };
 const ptrs = new Map();
-const DPAD_ZONAS = [
+const DPAD_ZONAS = MOBILE ? [
+  { id: 'fwd', rot: '▲', x: 104, y: H - 226, w: 92, h: 84 },
+  { id: 're',  rot: '▼', x: 104, y: H - 100, w: 92, h: 84 },
+  { id: 'esq', rot: '◀', x: 12,  y: H - 172, w: 88, h: 88 },
+  { id: 'dir', rot: '▶', x: 200, y: H - 172, w: 88, h: 88 },
+] : [
   { id: 'fwd', rot: '▲', x: 66,  y: H - 148, w: 52, h: 48 },
   { id: 're',  rot: '▼', x: 66,  y: H - 46,  w: 52, h: 46 },
   { id: 'esq', rot: '◀', x: 12,  y: H - 98,  w: 52, h: 50 },
