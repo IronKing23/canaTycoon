@@ -2897,7 +2897,8 @@ function iniciarMecanico() {
     producao: 0, custoPecas: 0, perdaParada: 0, manutencoes: 0, quebrasTot: 0,
     proxQuebra: 6, t: 0, fim: false, fimT: 0, recorde: rec, novoRec: false,
     diesel: CFG.MEC_TANQUE, custoDiesel: 0, resgate: false, drones: [], dronePainel: false,
-    capis: [], bandos: [] };
+    capis: [], bandos: [], streak: 0, bonusTotal: 0, evento: null, proxEvento: 38,
+    banner: null, turbo: false, turboOn: false };
   G.pausa = false;
 }
 function escolherMec(i) {
@@ -2946,13 +2947,18 @@ function moverMec(dt) {
   let dx = (kb.dir ? 1 : 0) - (kb.esq ? 1 : 0), dy = (kb.re ? 1 : 0) - (kb.fwd ? 1 : 0);
   if (joySurv && joySurv.ativo) { dx = joySurv.dx; dy = joySurv.dy; }
   const semDiesel = m.diesel <= 0;
-  const mag = Math.hypot(dx, dy), vel = semDiesel ? 0 : CFG.MEC_VEL;
+  if (semDiesel) m.turboOn = false;
+  const tb = (m.turbo || m.turboOn) && !semDiesel;
+  const mag = Math.hypot(dx, dy), vel = semDiesel ? 0 : CFG.MEC_VEL * (tb ? 1.55 : 1);
   if (mag > 0.15 && !semDiesel) {
     const mm = mag < 1 ? 1 : mag;
     jog.x = clamp(jog.x + (dx / mm) * vel * dt, 40, MW - 40);
     jog.y = clamp(jog.y + (dy / mm) * vel * dt, 40, MH - 40);
     jog.ang = Math.atan2(dy, dx); jog.movendo = true; jog.frame += dt * 9;
-    m.diesel = Math.max(0, m.diesel - CFG.MEC_CONSUMO * dt);
+    m.diesel = Math.max(0, m.diesel - CFG.MEC_CONSUMO * dt * (tb ? 3 : 1));
+    if (tb && Math.random() < dt * 22) part(jog.x - Math.cos(jog.ang) * 30, jog.y - Math.sin(jog.ang) * 30,
+      { vx: [-24, 24], vy: [-26, 6], vida: [.12, .3], tam: [2, 4],
+        cores: ['#ffb03a', '#ff7a3e', '#ffe9a0'], grav: -20, n: 2 });
     if (m.diesel <= 0) { toast('⛽ PANE SECA! Peça diesel por drone (' + (MOBILE ? 'botão 🚁' : 'ESPAÇO') + ')', 3.5); SFX.multa(); }
     if (Math.random() < dt * 6) rastros.push({ x: jog.x, y: jog.y, ang: jog.ang, t: 0 });
     if (Math.random() < dt * 9) part(jog.x - Math.cos(jog.ang) * 26, jog.y - Math.sin(jog.ang) * 26,
@@ -3018,17 +3024,57 @@ function desenharDrones() {
     ctx.restore(); ctx.textAlign = 'left';
   }
 }
-function quebrarMaquina() {
+function quebrarMaquina(seca, defId) {
   const m = G.mec, ok = m.maquinas.filter(q => q.estado === 'ok');
-  if (!ok.length) return;
-  const q = escolha(ok), d = escolha(MEC_DEFEITOS);
-  q.estado = 'quebrada'; q.defeito = d.id; q.alertaT = 0; m.quebrasTot++;
-  SFX.alarme();
+  if (!ok.length) return null;
+  const q = escolha(ok), d = defId ? DEF(defId) : escolha(MEC_DEFEITOS);
+  q.defeito = d.id;
+  if (!seca && Math.random() < 0.6) {                          // fase de alerta: dá pra prevenir!
+    q.estado = 'alerta'; q.preT = rand(8, 11); SFX.peca();
+  } else panerMaquina(q);
+  return q;
+}
+function panerMaquina(q) {                                      // efetiva a pane
+  const m = G.mec;
+  q.estado = 'quebrada'; q.alertaT = 0; q.tQuebra = 0; q.grave = false;
+  m.quebrasTot++; SFX.alarme();
+}
+function preventivaMec(q) {                                     // chegou a tempo no alerta
+  const m = G.mec;
+  q.estado = 'ok'; q.defeito = null; q.preT = 0;
+  m.manutencoes++; m.streak++;
+  flut(q.x, q.y - 50, '🔧 PREVENTIVA! pane evitada', '#8fe36a'); SFX.recorde();
+  part(q.x, q.y, { vx: [-70, 70], vy: [-100, 10], vida: [.25, .6], tam: [2, 4],
+    cores: ['#8fe36a', '#ffd94d'], grav: 190, n: 12 });
+}
+function buzinarMec() {
+  const m = G.mec; if (!m || m.tela !== 'campo') return;
+  flut(jog.x, jog.y - 40, '📯 FOM-FOM!', '#ffd94d'); SFX.capi();
+  for (const c of m.capis) if (dist2(c.x, c.y, jog.x, jog.y) < 230 * 230) {
+    c.estado = 'foge'; c.t = 2; c.ang = Math.atan2(c.y - jog.y, c.x - jog.x);
+  }
+}
+function sortearEventoMec() {
+  const m = G.mec, id = escolha(['pico', 'tempestade', 'expresso']);
+  if (id === 'pico') { m.evento = { id: 'pico', t: 30 };
+    m.banner = { txt: '📈 PICO DE MOAGEM — produção 2× por 30s!', t: 4, cor: '#ffd94d' }; SFX.vendona(); }
+  else if (id === 'tempestade') {
+    const n = 1 + (Math.random() < 0.5 ? 1 : 0);
+    for (let k = 0; k < n; k++) quebrarMaquina(true, 'eletrico');
+    m.banner = { txt: '⚡ TEMPESTADE — panes elétricas na frota!', t: 4, cor: '#8fd6e8' };
+    tremer(0.3); G.flashRaio = 0.8; SFX.raio(); }
+  else {
+    const q = quebrarMaquina(true);
+    if (q) { q.expresso = 35;
+      m.banner = { txt: '📻 SERVIÇO EXPRESSO — conserte a ' + q.nome + ' em 35s: +R$350!', t: 4.5, cor: '#ff9a3e' }; SFX.alarme(); }
+    else { m.evento = { id: 'pico', t: 30 };
+      m.banner = { txt: '📈 PICO DE MOAGEM — produção 2× por 30s!', t: 4, cor: '#ffd94d' }; }
+  }
 }
 function acharAlvoMec() {                                       // máquina/depósito ao alcance
   const m = G.mec;
   let alvo = null, md = 95 * 95;
-  for (const q of m.maquinas) if (q.estado === 'quebrada') {
+  for (const q of m.maquinas) if (q.estado === 'quebrada' || q.estado === 'alerta') {
     const d = dist2(jog.x, jog.y, q.x, q.y); if (d < md) { md = d; alvo = q; }
   }
   if (alvo) return { tipo: 'maquina', maq: alvo };
@@ -3044,6 +3090,7 @@ function acaoMec() {                                            // botão/ESPAÇ
   const alvo = m.hover;
   if (!alvo) return;
   if (alvo.tipo === 'depot') { m.depot = true; SFX.moeda(); return; }
+  if (alvo.maq.estado === 'alerta') { preventivaMec(alvo.maq); return; }
   iniciarReparoMec(alvo.maq);
 }
 function novaZonaMec(r) {
@@ -3062,7 +3109,8 @@ function iniciarReparoMec(q) {
   }
   q.estado = 'reparando';
   const vm = m.velMul || 1;
-  const r = { maq: q, def: d, mg: d.mg || 'torque', bolts: d.bolts, feitos: 0, penal: 0, emerg };
+  const r = { maq: q, def: d, mg: d.mg || 'torque', bolts: d.bolts + (q.grave ? 1 : 0),
+    feitos: 0, penal: 0, erros: 0, emerg };
   if (r.mg === 'torque') { r.vel = d.vel / vm; r.zona = d.zona; novaZonaMec(r); }
   else if (r.mg === 'tensao') { r.fase = rand(0, 6.28); r.velT = 3.0 / vm; r.z = 0.13; }
   else if (r.mg === 'mash') { r.prog = 0; r.taxa = 0.15 * vm; }
@@ -3086,7 +3134,7 @@ function torqueMec() {                                        // ação primári
     part(jog.x, jog.y - 20, { vx: [-50, 50], vy: [-70, -10], vida: [.2, .5], tam: [2, 3],
       cores: ['#ffd94d', '#fff'], grav: 160, n: 4 });
     if (r.feitos >= r.bolts) { finalizarReparoMec(); return true; } return false; };
-  const erra = () => { if (!m.semFalha) { r.penal = 0.45; SFX.multa(); tremer(0.08); } };
+  const erra = () => { r.erros++; if (!m.semFalha) { r.penal = 0.45; SFX.multa(); tremer(0.08); } };
   if (r.mg === 'torque') {
     if (r.marcador >= r.zi && r.marcador <= r.zf) { if (acerta()) return;
       r.zona = Math.max(0.16, r.zona * 0.92); novaZonaMec(r); }
@@ -3118,7 +3166,7 @@ function fioMec(i) {                                           // input do mini-
       if (r.feitos >= r.bolts) return finalizarReparoMec();
       novaSeqMec(r, 5);                                        // 2ª sequência, mais longa
     }
-  } else { if (!m.semFalha) { r.penal = 0.5; SFX.multa(); tremer(0.08); }
+  } else { r.erros++; if (!m.semFalha) { r.penal = 0.5; SFX.multa(); tremer(0.08); }
     r.pos = 0; r.mostraT = 0; r.mostrando = true; }
 }
 function finalizarReparoMec() {
@@ -3127,6 +3175,15 @@ function finalizarReparoMec() {
     m.grana -= pe; m.custoPecas += pe; }
   else if (!(m.economiza && Math.random() < 0.15)) { m.pecas[d.peca] = Math.max(0, (m.pecas[d.peca] || 0) - 1); }
   q.estado = 'ok'; q.defeito = null; m.reparo = null; m.manutencoes++;
+  if (q.expresso > 0) { m.grana += 350; m.bonusTotal += 350; q.expresso = 0;
+    flut(q.x, q.y - 66, '📻 EXPRESSO +R$350!', '#ffb03a'); SFX.vendona(); }
+  q.grave = false; q.tQuebra = 0;
+  if (r.erros === 0) { m.streak++;
+    const b = 60 * Math.min(m.streak, 5);
+    m.grana += b; m.bonusTotal += b;
+    flut(q.x, q.y - 82, '⭐ IMPECÁVEL x' + m.streak + '  +R$' + b, '#ffd94d');
+    anel(q.x, q.y, 10, 70, 0.4, '#ffd94d', 4);
+  } else m.streak = 0;
   flut(q.x, q.y - 50, '✅ CONSERTADA', '#8fe36a'); SFX.recorde();
   part(q.x, q.y, { vx: [-90, 90], vy: [-120, 20], vida: [.3, .7], tam: [2, 4],
     cores: ['#8fe36a', '#ffd94d', '#fff'], grav: 200, n: 16 });
@@ -3147,9 +3204,10 @@ function relogioMec(dt) {
   const m = G.mec;
   G.hora += dt * CFG.MIN_POR_SEG;
   const dh = dt * CFG.MIN_POR_SEG / 60;                       // horas de jogo passadas
+  const fator = (m.evento && m.evento.id === 'pico') ? 2 : 1;
   for (const q of m.maquinas) {
-    if (q.estado === 'ok') { m.grana += q.vh * dh; m.producao += q.vh * dh; }
-    else { m.perdaParada += q.vh * dh; q.alertaT += dt; }
+    if (q.estado === 'ok' || q.estado === 'alerta') { m.grana += q.vh * dh * fator; m.producao += q.vh * dh * fator; }
+    else { m.perdaParada += q.vh * dh * fator * (q.grave ? 1.5 : 1); q.alertaT += dt; }
   }
   if (!m.aviso21 && G.hora >= 21 * 60) { m.aviso21 = true; toast('⏰ 21:00 — última hora do turno!', 3); SFX.alarme(); }
   if (G.hora >= CFG.HORA_FIM) { G.hora = CFG.HORA_FIM; fimMecanico(); }
@@ -3163,6 +3221,20 @@ function atualizarMecanico(dt) {
     m.proxQuebra -= dt;
     if (m.proxQuebra <= 0) { quebrarMaquina();
       m.proxQuebra = Math.max(6, rand(11, 19) - m.t * 0.02); }
+    m.proxEvento -= dt;
+    if (m.proxEvento <= 0) { sortearEventoMec(); m.proxEvento = rand(50, 75); }
+  }
+  if (m.evento) { m.evento.t -= dt; if (m.evento.t <= 0) { m.evento = null;
+    m.banner = { txt: '📉 fim do pico de moagem', t: 2.2, cor: '#9fb8a8' }; } }
+  if (m.banner) { m.banner.t -= dt; if (m.banner.t <= 0) m.banner = null; }
+  for (const q of m.maquinas) {
+    if (q.estado === 'alerta') { q.preT -= dt;
+      if (q.preT <= 0) { panerMaquina(q);
+        m.banner = m.banner || { txt: '🚨 ' + q.nome + ' quebrou — alerta ignorado!', t: 2.6, cor: '#ff8f80' }; } }
+    else if (q.estado === 'quebrada') { q.tQuebra = (q.tQuebra || 0) + dt;
+      if (q.expresso > 0) { q.expresso -= dt; if (q.expresso <= 0) q.expresso = 0; }
+      if (!q.grave && q.tQuebra > 26) { q.grave = true; SFX.multa();
+        m.banner = { txt: '🆘 ' + q.nome + ' AGRAVOU — perda 1.5× e reparo maior!', t: 3, cor: '#ff6a5e' }; } }
   }
   for (const q of m.maquinas) {
     q.frame += dt * (q.estado === 'ok' ? 1.4 : 1);
@@ -3210,7 +3282,7 @@ function atualizarMecanico(dt) {
     else if (r.mg === 'tensao') r.fase += r.velT * dt;
     else if (r.mg === 'mash') r.prog = Math.max(0, r.prog - 0.42 * dt);
     else if (r.mg === 'pressao') { if (r.enchendo) { r.press += 0.5 * dt;
-      if (r.press > 1) { r.press = 0; r.enchendo = false;
+      if (r.press > 1) { r.press = 0; r.enchendo = false; r.erros++;
         if (!m.semFalha) { r.penal = 0.5; SFX.multa(); tremer(0.1); }
         part(jog.x, jog.y - 24, { vx: [-70, 70], vy: [-90, -10], vida: [.2, .5], tam: [2, 3],
           cores: ['#7fd6e8', '#fff'], grav: 170, n: 10 }); } } }
@@ -3375,28 +3447,42 @@ function desenharMecKit() {
 }
 
 function desenharMaquina(q) {
-  const m = G.mec, quebrada = q.estado !== 'ok';
+  const m = G.mec, quebrada = q.estado === 'quebrada' || q.estado === 'reparando';
+  const alerta = q.estado === 'alerta';
   const sh = quebrada ? Math.sin(q.frame * 22) * 1.5 : 0;
   ctx.fillStyle = 'rgba(10,14,8,.3)';
   ctx.beginPath(); ctx.ellipse(q.x, q.y + 16, 30, 12, 0, 0, 7); ctx.fill();
   ctx.save(); ctx.translate(q.x + sh, q.y);
-  if (!quebrada) ctx.rotate(Math.cos(q.wAng) < 0 ? Math.PI + q.wAng : q.wAng) , ctx.scale(Math.cos(q.wAng) < 0 ? -1 : 1, 1);
-  ctx.drawImage(SPR.colhedora[quebrada ? 0 : Math.floor(q.frame * 6) % 2], -28, -18);
-  if (quebrada) { ctx.fillStyle = 'rgba(224,64,46,.28)'; ctx.beginPath(); ctx.arc(0, 0, 30, 0, 7); ctx.fill(); }
+  if (q.estado === 'ok') ctx.rotate(Math.cos(q.wAng) < 0 ? Math.PI + q.wAng : q.wAng) , ctx.scale(Math.cos(q.wAng) < 0 ? -1 : 1, 1);
+  ctx.drawImage(SPR.colhedora[q.estado === 'ok' ? Math.floor(q.frame * 6) % 2 : 0], -28, -18);
+  if (quebrada) { ctx.fillStyle = 'rgba(224,64,46,' + (q.grave ? .38 : .28) + ')'; ctx.beginPath(); ctx.arc(0, 0, 30, 0, 7); ctx.fill(); }
   ctx.restore();
-  // nome + valor/h
   ctx.textAlign = 'center'; ctx.font = '700 10px "Courier New", monospace';
-  ctx.fillStyle = quebrada ? '#ff8f80' : '#9fe36a';
+  ctx.fillStyle = quebrada ? '#ff8f80' : alerta ? '#ffd94d' : '#9fe36a';
   ctx.fillText(q.nome + '  R$' + q.vh + '/h', q.x, q.y + 34);
-  if (quebrada) {
+  if (alerta) {                                                  // pré-pane: dá pra prevenir!
+    if (Math.random() < 0.25) part(q.x + rand(-10, 10), q.y - 14,
+      { vx: [-8, 8], vy: [-30, -14], vida: [.5, 1.1], tam: [2, 4],
+        cores: ['rgba(240,200,60,.55)', 'rgba(200,160,40,.45)'], grav: -14, n: 1 });
+    const pul = 0.6 + 0.4 * Math.sin(G.t * 7);
+    ctx.strokeStyle = 'rgba(240,200,40,' + pul.toFixed(2) + ')'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(q.x, q.y, 34, 0, 7); ctx.stroke();
+    ctx.font = '18px "Segoe UI", sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText('⚠️', q.x, q.y - 30);
+    const frac = clamp(q.preT / 11, 0, 1);                       // barrinha de urgência
+    ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(q.x - 22, q.y - 48, 44, 6);
+    ctx.fillStyle = frac > 0.4 ? '#ffd94d' : '#ff7a5e'; ctx.fillRect(q.x - 21, q.y - 47, 42 * frac, 4);
+  } else if (quebrada) {
     const d = DEF(q.defeito), perto = m.veLonge || dist2(jog.x, jog.y, q.x, q.y) < 240 * 240;
     const pul = 0.6 + 0.4 * Math.sin(q.frame * 6);
-    ctx.strokeStyle = 'rgba(224,64,46,' + pul.toFixed(2) + ')'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(q.x, q.y, 34, 0, 7); ctx.stroke();
+    ctx.strokeStyle = q.grave ? 'rgba(255,40,26,' + pul.toFixed(2) + ')' : 'rgba(224,64,46,' + pul.toFixed(2) + ')';
+    ctx.lineWidth = q.grave ? 4 : 3;
+    ctx.beginPath(); ctx.arc(q.x, q.y, q.grave ? 37 : 34, 0, 7); ctx.stroke();
     ctx.font = '20px "Segoe UI", sans-serif'; ctx.fillStyle = '#fff';
-    ctx.fillText(perto ? d.icone : '⚠️', q.x, q.y - 30);
+    ctx.fillText(q.grave ? '🆘' : (perto ? d.icone : '⚠️'), q.x, q.y - 30);
     if (perto) { ctx.fillStyle = d.cor; ctx.font = '700 9px "Courier New", monospace';
-      ctx.fillText(d.nome, q.x, q.y - 44); }
+      ctx.fillText(d.nome + (q.grave ? ' · GRAVE' : ''), q.x, q.y - 44); }
+    if (q.expresso > 0) { ctx.fillStyle = '#ffb03a'; ctx.font = '800 12px "Courier New", monospace';
+      ctx.fillText('📻 ' + Math.ceil(q.expresso) + 's  +R$350', q.x, q.y - 58); }
   } else if (Math.random() < 0.04) {
     part(q.x + 14, q.y - 12, { vx: [-4, 6], vy: [-20, -8], vida: [.6, 1.2], tam: [2, 4],
       cores: ['rgba(200,205,210,.4)', 'rgba(160,166,172,.35)'], grav: -6, n: 1 });
@@ -3497,7 +3583,10 @@ function desenharMecHUD() {
   ctx.textAlign = 'left'; ctx.fillStyle = '#ffd94d'; ctx.font = '800 ' + (grande ? 24 : 20) + 'px "Courier New", monospace';
   ctx.fillText('R$ ' + Math.floor(m.grana), 16, grande ? 40 : 34);
   ctx.fillStyle = '#7fd47f'; ctx.font = '700 11px "Courier New", monospace';
-  ctx.fillText('+R$' + Math.round(taxa) + '/h rodando', 16, grande ? 56 : 48);
+  const pico2 = m.evento && m.evento.id === 'pico';
+  ctx.fillText('+R$' + Math.round(taxa * (pico2 ? 2 : 1)) + '/h rodando', 16, grande ? 56 : 48);
+  if (pico2 && Math.floor(G.t * 3) % 2 === 0) { ctx.fillStyle = '#ffd94d'; ctx.font = '800 13px "Courier New", monospace';
+    ctx.fillText('×2 📈 ' + Math.ceil(m.evento.t) + 's', 16 + 128, grande ? 56 : 48); }
   { const dw = 84, dx2 = 172, dy2 = grande ? 26 : 20, pct = m.diesel / CFG.MEC_TANQUE;   // diesel
     const baixo = pct < 0.25, pisca = baixo && Math.floor(G.t * 4) % 2 === 0;
     ctx.font = (grande ? 16 : 14) + 'px "Segoe UI", sans-serif';
@@ -3506,6 +3595,15 @@ function desenharMecHUD() {
     ctx.fillStyle = pct > 0.5 ? '#7fd47f' : pct > 0.25 ? '#ffb03a' : '#ff5a4a';
     if (pct > 0.01) { rr(dx2 + 1, dy2 + 1, (dw - 2) * pct, 10, 5); ctx.fill(); }
     ctx.strokeStyle = 'rgba(220,230,238,.35)'; ctx.lineWidth = 1; rr(dx2, dy2, dw, 12, 6); ctx.stroke(); }
+  { const bs2 = grande ? 52 : 42, tx3 = W - bs2 - 12, ty3 = H - (grande ? 148 : 120) - bs2 - 10;  // botão turbo
+    const tOn = m.turbo || m.turboOn;
+    ctx.fillStyle = tOn ? 'rgba(120,70,20,.94)' : 'rgba(20,32,42,.9)'; rr(tx3, ty3, bs2, bs2, 10); ctx.fill();
+    ctx.strokeStyle = tOn ? '#ffb03a' : '#8fd6e8'; ctx.lineWidth = 2; rr(tx3, ty3, bs2, bs2, 10); ctx.stroke();
+    ctx.font = (grande ? 24 : 20) + 'px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff'; ctx.fillText('💨', tx3 + bs2 / 2, ty3 + bs2 / 2 + 7);
+    if (!grande) { ctx.font = '700 9px "Courier New", monospace'; ctx.fillStyle = tOn ? '#ffd94d' : '#8fd6e8';
+      ctx.fillText('SHIFT', tx3 + bs2 / 2, ty3 + bs2 - 4); }
+    botoesTela.push({ x: tx3, y: ty3, w: bs2, h: bs2, cb: () => { m.turboOn = !m.turboOn; } }); ctx.textAlign = 'left'; }
   { const bs = grande ? 52 : 42, bx3 = W - bs - 12, by3 = H - (grande ? 148 : 120);      // botão drone
     ctx.fillStyle = 'rgba(20,32,42,.9)'; rr(bx3, by3, bs, bs, 10); ctx.fill();
     ctx.strokeStyle = '#8fd6e8'; ctx.lineWidth = 2; rr(bx3, by3, bs, bs, 10); ctx.stroke();
@@ -3530,7 +3628,7 @@ function desenharMecHUD() {
   ctx.fillStyle = rodando === tot ? '#7fd47f' : '#ffb03a';
   ctx.fillText('⚙ ' + rodando + '/' + tot + ' rodando', W - 180, grande ? 36 : 30);
   ctx.fillStyle = '#8fd6e8'; ctx.font = '700 12px "Courier New", monospace';
-  ctx.fillText('🔧 ' + m.manutencoes + ' manutenções', W - 180, grande ? 54 : 46);
+  ctx.fillText('🔧 ' + m.manutencoes + ' manutenções' + (m.streak > 0 ? '  🔥x' + m.streak : ''), W - 180, grande ? 54 : 46);
   ctx.textAlign = 'left';
   // minimapa (canto sup. direito)
   { const rw = grande ? 150 : 130, rh = rw * MH / MW, rx = W - rw - 12, ry = grande ? 66 : 60;
@@ -3564,8 +3662,15 @@ function desenharMecHUD() {
   if (m.t < 6) { ctx.fillStyle = 'rgba(255,255,255,' + (clamp(1 - m.t / 6, 0, 1) * 0.9) + ')';
     ctx.font = '700 14px "Courier New", monospace'; ctx.textAlign = 'center';
     ctx.fillText(MOBILE ? 'Arraste para dirigir até as máquinas vermelhas' : 'WASD/setas para dirigir · chegue perto das máquinas quebradas', W / 2, H - 62); ctx.textAlign = 'left'; }
-  // pausa (só desktop tem tecla; botão no canto)
-  const pb = grande ? 40 : 32, ppx = W - pb - 8, ppy = H - pb - 8;
+  if (m.banner) {                                              // banner de evento
+    const a = clamp(m.banner.t / 0.4, 0, 1);
+    ctx.globalAlpha = a; ctx.font = '800 ' + (grande ? 19 : 17) + 'px "Courier New", monospace';
+    const tw2 = ctx.measureText(m.banner.txt).width + 44, bx5 = W / 2 - tw2 / 2, by5 = grande ? 84 : 68;
+    ctx.fillStyle = 'rgba(10,16,12,.92)'; rr(bx5, by5, tw2, 40, 11); ctx.fill();
+    ctx.strokeStyle = m.banner.cor; ctx.lineWidth = 2.5; rr(bx5, by5, tw2, 40, 11); ctx.stroke();
+    ctx.fillStyle = m.banner.cor; ctx.textAlign = 'center';
+    ctx.fillText(m.banner.txt, W / 2, by5 + 26); ctx.textAlign = 'left'; ctx.globalAlpha = 1;
+  }
 }
 
 function desenharMecReparo() {
@@ -3767,24 +3872,24 @@ function desenharMecFim() {
   // stats: ganhos e perdas
   const linhas = [
     ['🏭 Produção das máquinas', '+R$' + Math.floor(m.producao), '#7fd47f'],
+    ['⭐ Bônus de serviço', '+R$' + Math.floor(m.bonusTotal || 0), '#ffd94d'],
     ['🧰 Gasto com peças e drones', '-R$' + Math.floor(m.custoPecas), '#ff9a5e'],
     ['⛽ Diesel e resgates', '-R$' + Math.floor(m.custoDiesel), '#ffb87a'],
     ['⏱️ Perdido em paradas', '-R$' + Math.floor(m.perdaParada), '#ff7a5e'],
-    ['🔧 Manutenções feitas', '' + m.manutencoes, '#8fd6e8'],
-    ['⚠️ Quebras no turno', '' + m.quebrasTot, '#cfe0b8'],
+    ['🔧 ' + m.manutencoes + ' manutenções  ·  ⚠️ ' + m.quebrasTot + ' quebras', '', '#8fd6e8'],
   ];
-  linhas.forEach((l, i) => { const Y = y + 176 + i * 26;
+  linhas.forEach((l, i) => { const Y = y + 174 + i * 24;
     ctx.textAlign = 'left'; ctx.fillStyle = '#cfe0e8'; ctx.font = '700 13px "Courier New", monospace'; ctx.fillText(l[0], x + 40, Y);
     ctx.textAlign = 'right'; ctx.fillStyle = l[2]; ctx.fillText(l[1], x + 560 - 40, Y); });
   ctx.textAlign = 'center'; ctx.fillStyle = m.novoRec ? '#ffd94d' : '#9fb8a8'; ctx.font = '700 13px "Courier New", monospace';
-  ctx.fillText(m.novoRec ? '✨ NOVO RECORDE DE CAIXA! ✨' : ('Recorde: R$ ' + m.recorde), W / 2, y + 326);
+  ctx.fillText(m.novoRec ? '✨ NOVO RECORDE DE CAIXA! ✨' : ('Recorde: R$ ' + m.recorde), W / 2, y + 322);
   // ranking curto
   const rank = m._rank || [];
-  ctx.fillStyle = '#ffd94d'; ctx.font = '700 12px "Courier New", monospace'; ctx.fillText('🏅 MELHORES CAIXAS', W / 2, y + 350);
+  ctx.fillStyle = '#ffd94d'; ctx.font = '700 12px "Courier New", monospace'; ctx.fillText('🏅 MELHORES CAIXAS', W / 2, y + 344);
   ctx.font = '11px "Courier New", monospace';
   rank.slice(0, 3).forEach((e, i) => { const meu = e.t === m._rankT;
     ctx.fillStyle = meu ? '#ffd94d' : '#cfe0b8';
-    ctx.fillText((i + 1) + 'º ' + e.n + '  R$' + e.g + '  (' + e.mn + ' manut.)', W / 2, y + 368 + i * 16); });
+    ctx.fillText((i + 1) + 'º ' + e.n + '  R$' + e.g + '  (' + e.mn + ' manut.)', W / 2, y + 360 + i * 15); });
   if (m.fimT > 0.5) {
     chip(x + 40, y + 440 - 44, 240, 34, '🔄 JOGAR DE NOVO', null, true, iniciarMecanico);
     chip(x + 320, y + 440 - 44, 240, 34, '🏠 VOLTAR AO MENU', null, true, () => { G.fase = 'menu'; });
@@ -5302,10 +5407,12 @@ const AJUDA_PAGS = [
     'na faixa · ⚡ elétrico=memorize e repita a sequência de fios.',
     '⛽ O caminhão gasta DIESEL ao rodar: abasteça no depósito ou',
     'peça o drone-tanque na pane seca (caro!).',
-    '🚁 Tecla Q / botão: peça PEÇAS POR DRONE (taxa 1.4×) — elas',
-    'voam da usina até você. No depósito o preço é normal.',
-    'Máquina rodando gera R$/h; parada, você PERDE a produção.',
-    'Placar = caixa final. À noite, acenda o caminho com os faróis!',
+    '🚁 Tecla Q / botão: peça PEÇAS POR DRONE (taxa 1.4×).',
+    '⚠️ Máquinas FUMEGAM antes de quebrar: chegue a tempo e faça a',
+    'PREVENTIVA! Pane ignorada por 26s AGRAVA (perda 1.5×, +etapa).',
+    '📈 Eventos: pico 2×, tempestade ⚡ e expresso 📻 (+R$350).',
+    '🔥 Reparo sem erro = combo IMPECÁVEL (bônus). 💨 SHIFT = turbo',
+    '(1.55× mais rápido, 3× mais diesel). 📯 B = buzina!',
   ]},
   { t: '🏁 CAMPANHA & RANKING', l: [
     'A safra é a CAMPANHA que você escolheu (1 a 5 dias). Bata a',
@@ -5566,6 +5673,8 @@ window.addEventListener('keydown', e => {
       if (e.code === 'KeyQ' || e.code === 'Escape') { m.dronePainel = false; return; }
       return;
     }
+    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { m.turbo = true; return; }
+    if (e.code === 'KeyB') { buzinarMec(); return; }
     if (e.code === 'KeyQ') { m.dronePainel = true; return; }
     if (e.code === 'Space' || e.code === 'Enter') { acaoMec(); return; }
     if (e.code === 'Escape') { G.fase = 'menu'; return; }
@@ -5622,6 +5731,7 @@ window.addEventListener('keyup', e => {
     case 'KeyA': case 'ArrowLeft': kb.esq = false; break;
     case 'KeyD': case 'ArrowRight': kb.dir = false; break;
   }
+  if (G.fase === 'mecanico' && G.mec && (e.code === 'ShiftLeft' || e.code === 'ShiftRight')) G.mec.turbo = false;
   sincDpad();
 });
 
@@ -5749,6 +5859,7 @@ globalThis.__T = {
          iniciarMecanico, escolherMec, irCampoMec, acaoMec, torqueMec, quebrarMaquina,
          atualizarMecanico, fimMecanico, iniciarReparoMec, comprarPecaKit, toggleFerr,
          fioMec, pedirDrone, abastecerMec, atualizarDronesMec,
+         preventivaMec, panerMaquina, sortearEventoMec, buzinarMec,
          MEC_DEFEITOS, MEC_PECAS, MEC_FERRAMENTAS, MEC_TALENTOS,
          iniciarSurvivor, atualizarSurvivor, criarInimigo, criarBoss, ganharXP,
          abrirEscolha, escolherMelhoria, fimSurvivor, spawnInimigo,
