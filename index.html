@@ -62,8 +62,10 @@
     mix-blend-mode:multiply;
   }
   #nomeBox {
-    position:absolute; left:50%; top:30%; transform:translateX(-50%);
+    position:absolute; left:50%; top:20.5%; transform:translateX(-50%);
     display:none; gap:8px; align-items:center; z-index:4;
+    background:rgba(8,14,6,.55); padding:6px 12px; border-radius:10px;
+    backdrop-filter:blur(3px);
   }
   #nomeBox label { color:#9fbf8a; font:700 13px "Courier New",monospace; letter-spacing:1px; }
   #nome {
@@ -3772,83 +3774,228 @@ function shareCodigo() {
 }
 
 function desenharMenu() {
-  ctx.fillStyle = 'rgba(8,12,6,.55)'; ctx.fillRect(0, 0, W, H);
-  const { x, y } = painel(700, 528);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffd94d';
-  ctx.font = '700 40px "Courier New", monospace';
-  ctx.fillText('🚜 CANA TYCOON', W / 2, y + 46);
-  ctx.fillStyle = '#9fbf8a'; ctx.font = '700 11px "Courier New", monospace';
-  ctx.fillText('S I M U L A D O R   D E   S A F R A', W / 2, y + 66);
+  const t = G.t, cx = W / 2;
 
-  ctx.save();                                                       // colhedora
-  ctx.translate(W / 2, y + 104); ctx.scale(1.9, 1.9);
-  ctx.drawImage(SPR.colhedora[Math.floor(G.t * 6) % 2], -28, -18);
-  ctx.restore();
+  // ══════════════════ CENÁRIO DE FUNDO (tela toda) ══════════════════
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#ffcf7a'); sky.addColorStop(0.28, '#f2a35c');
+  sky.addColorStop(0.5, '#c98a5e'); sky.addColorStop(0.62, '#7f9a54');
+  sky.addColorStop(1, '#37521f');
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
 
-  ctx.fillStyle = '#77826a'; ctx.font = '10px "Courier New", monospace';
-  ctx.fillText('\u25B2 digite seu nome no campo acima \u25B2', W / 2, y + 146);
+  // sol + brilho
+  const sunX = W * 0.78, sunY = H * 0.26;
+  const glow = ctx.createRadialGradient(sunX, sunY, 8, sunX, sunY, 260);
+  glow.addColorStop(0, 'rgba(255,240,190,.9)'); glow.addColorStop(0.4, 'rgba(255,210,130,.35)');
+  glow.addColorStop(1, 'rgba(255,200,120,0)');
+  ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(255,248,225,.95)';
+  ctx.beginPath(); ctx.arc(sunX, sunY, 34, 0, 7); ctx.fill();
 
-  // ---- SELETOR DE DIAS DE SAFRA ----
-  const selY = y + 168;
-  ctx.fillStyle = '#cfe0b8'; ctx.font = '700 13px "Courier New", monospace';
-  ctx.fillText('QUANTOS DIAS DE SAFRA?', W / 2, selY);
-  const dc = G.diasCampanha;
-  chip(W / 2 - 128, selY + 10, 42, 40, '\u25C0', null, dc > 1,
-       () => { G.diasCampanha = Math.max(1, G.diasCampanha - 1); });
-  ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.fillRect(W / 2 - 78, selY + 10, 156, 40);
-  ctx.strokeStyle = '#f0c814'; ctx.lineWidth = 2; ctx.strokeRect(W / 2 - 78, selY + 10, 156, 40);
-  ctx.fillStyle = '#ffd94d'; ctx.font = '700 22px "Courier New", monospace';
-  ctx.fillText(dc + (dc > 1 ? ' DIAS' : ' DIA'), W / 2, selY + 37);
-  for (let i = 0; i < CFG.DIAS_MAX; i++) {
-    ctx.fillStyle = i < dc ? '#ffd94d' : '#4a5540';
-    ctx.beginPath(); ctx.arc(W / 2 - (CFG.DIAS_MAX - 1) * 8 + i * 16, selY + 60, 3.5, 0, 7); ctx.fill();
+  // nuvens
+  for (let i = 0; i < 4; i++) {
+    const cxx = ((t * 9 + i * 320) % (W + 360)) - 180, cyy = 60 + i * 34 + Math.sin(i) * 20;
+    ctx.fillStyle = 'rgba(255,250,240,' + (0.16 + i * 0.03) + ')';
+    for (let b = 0; b < 4; b++) { ctx.beginPath();
+      ctx.ellipse(cxx + b * 34, cyy + Math.sin(b) * 6, 34 - b * 3, 18 - b, 0, 0, 7); ctx.fill(); }
   }
-  chip(W / 2 + 86, selY + 10, 42, 40, '\u25B6', null, dc < CFG.DIAS_MAX,
-       () => { G.diasCampanha = Math.min(CFG.DIAS_MAX, G.diasCampanha + 1); });
-  ctx.fillStyle = '#77826a'; ctx.font = '9px "Courier New", monospace';
-  ctx.fillText('padrao 2 \u00b7 max ' + CFG.DIAS_MAX + '   (setas \u2190 \u2192)', W / 2, selY + 78);
 
-  // ---- EQUIPE DE MECÂNICOS (galeria de avatares) ----
-  const galY = y + 278;
-  ctx.fillStyle = '#cfe0b8'; ctx.font = '700 12px "Courier New", monospace';
-  ctx.fillText('\ud83d\udd27 SUA EQUIPE NA REFORMA LINEAR', W / 2, galY);
-  const n = AVA.length, gap = 78, x0 = W / 2 - (n - 1) * gap / 2;
-  for (let i = 0; i < n; i++) {
-    const ax = x0 + i * gap, ay = galY + 14;
-    const bob = Math.sin(G.t * 2 + i * 0.7) * 2;
-    if (AVA[i]) {
-      ctx.drawImage(AVA[i], ax - 24, ay + bob, 48, 48);
-      ctx.strokeStyle = '#3c4a30'; ctx.lineWidth = 1; ctx.strokeRect(ax - 24, ay + bob, 48, 48);
+  // colinas distantes (parallax)
+  ctx.fillStyle = '#6b8a48';
+  ctx.beginPath(); ctx.moveTo(0, H * 0.62);
+  for (let x = 0; x <= W; x += 40) ctx.lineTo(x, H * 0.62 + Math.sin(x * 0.012 + 1) * 18 - 10);
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fill();
+  ctx.fillStyle = '#5a7a3c';
+  ctx.beginPath(); ctx.moveTo(0, H * 0.7);
+  for (let x = 0; x <= W; x += 40) ctx.lineTo(x, H * 0.7 + Math.sin(x * 0.02 + 3) * 14);
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fill();
+
+  // canavial balançando (várias fileiras)
+  for (let row = 0; row < 4; row++) {
+    const ry = H * 0.72 + row * 26, esc = 1 + row * 0.22;
+    for (let gx = -20; gx < W + 20; gx += 26) {
+      const px = gx + (row % 2) * 13, sway = Math.sin(t * 1.6 + gx * 0.05 + row) * 3 * esc;
+      ctx.strokeStyle = row < 2 ? '#4f7a30' : '#3f6626'; ctx.lineWidth = 2.4 * esc; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(px, ry); ctx.lineTo(px + sway, ry - 22 * esc); ctx.stroke();
+      ctx.strokeStyle = row < 2 ? '#6fa048' : '#57853a';
+      ctx.beginPath(); ctx.moveTo(px + 4, ry); ctx.lineTo(px + sway + 5, ry - 16 * esc); ctx.stroke();
     }
-    ctx.fillStyle = '#f0c814'; ctx.font = '9px "Courier New", monospace';
-    ctx.fillText('\u2605'.repeat(CFG.MECANICOS[i][1]), ax, ay + 60 + bob);
-    ctx.fillStyle = '#9fbf8a'; ctx.font = '700 8px "Courier New", monospace';
-    const nm = CFG.MECANICOS[i][0];
-    ctx.fillText(nm.length > 10 ? nm.slice(0, 9) + '\u2026' : nm, ax, ay + 70 + bob);
   }
 
-  ctx.fillStyle = '#9fbf8a'; ctx.font = '700 12px "Courier New", monospace';
-  chip(x + 110, y + 356, 480, 34, '\ud83d\udd25 MODO SOBREVIV\u00caNCIA \u2014 PRAGA SEM FIM', null, true, iniciarSurvivor);
-  ctx.textAlign = 'center';
-  ctx.fillText('\ud83c\udfc6 Recorde: ' + G.recDias + ' dia(s) \u00b7 pico ' + $(G.recGrana), W / 2, y + 392);
-
-  ctx.fillStyle = '#ffd94d';
-  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(G.t * 4);
-  ctx.font = '700 16px "Courier New", monospace';
-  ctx.fillText('ESPA\u00c7O ou TOQUE para jogar SOZINHO', W / 2, y + 414);
+  // estrada + colhedora dirigindo
+  const roadY = H * 0.9;
+  ctx.fillStyle = '#5a4632'; ctx.fillRect(0, roadY, W, H - roadY);
+  ctx.strokeStyle = 'rgba(240,220,150,.5)'; ctx.lineWidth = 3; ctx.setLineDash([26, 22]);
+  ctx.beginPath(); ctx.moveTo(0, roadY + (H - roadY) / 2); ctx.lineTo(W, roadY + (H - roadY) / 2); ctx.stroke();
+  ctx.setLineDash([]);
+  { const hx = ((t * 66) % (W + 160)) - 80, hy = roadY + 6;
+    ctx.fillStyle = 'rgba(0,0,0,.2)'; ctx.beginPath(); ctx.ellipse(hx, hy + 20, 34, 9, 0, 0, 7); ctx.fill();
+    ctx.save(); ctx.translate(hx, hy); ctx.scale(1.35, 1.35);
+    ctx.drawImage(SPR.colhedora[Math.floor(t * 8) % 2], -28, -18); ctx.restore();
+    if (Math.random() < 0.3) part(hx - 24, hy + 12, { vx: [-30, -8], vy: [-14, -2], vida: [.4, .9],
+      tam: [2, 4], cores: ['rgba(120,95,60,.5)', 'rgba(90,70,45,.4)'], grav: -6, n: 1 }); }
+  for (const p of parts) { ctx.globalAlpha = clamp(1 - p.t / p.vida, 0, 1); ctx.fillStyle = p.cor; ctx.fillRect(p.x, p.y, p.tam, p.tam); }
   ctx.globalAlpha = 1;
 
-  // ---- DUELO (competição por código) ----
-  ctx.fillStyle = '#8fd6e8'; ctx.font = '700 12px "Courier New", monospace';
-  ctx.fillText('\u2694\ufe0f  OU DESAFIE UM AMIGO (mesma safra, quem lucra mais vence)', W / 2, y + 440);
+  // pólen flutuante
+  for (let i = 0; i < 16; i++) {
+    const fx = (i * 61 + t * (10 + i % 5 * 4)) % W, fy = (H * 0.35 + i * 30 + Math.sin(t * 0.8 + i) * 40) % (H * 0.9);
+    ctx.fillStyle = 'rgba(255,240,190,' + (0.15 + (i % 4) * 0.08) + ')';
+    ctx.beginPath(); ctx.arc(fx, fy, 1.6 + (i % 3), 0, 7); ctx.fill();
+  }
+
+  // vinheta
+  const vg = ctx.createRadialGradient(cx, H * 0.5, H * 0.4, cx, H * 0.5, H * 0.95);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(6,10,4,.55)');
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+
+  // ══════════════════ TÍTULO ══════════════════
+  ctx.textAlign = 'center';
+  const tg = ctx.createLinearGradient(0, 22, 0, 74);
+  tg.addColorStop(0, '#fff2c4'); tg.addColorStop(1, '#f0b429');
+  ctx.font = '800 46px "Segoe UI", "Courier New", sans-serif';
+  ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(40,26,0,.6)'; ctx.strokeText('CANA TYCOON', cx, 60);
+  ctx.fillStyle = tg; ctx.fillText('CANA TYCOON', cx, 60);
+  ctx.font = '700 12px "Courier New", monospace'; ctx.fillStyle = 'rgba(255,255,255,.75)';
+  ctx.fillText('S I M U L A D O R   D E   S A F R A   ·   16-BIT', cx, 84);
+
+  // ══════════════════ HELPERS DE CARD ══════════════════
+  const rrect = (x, y, w, h, r) => {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  };
+  const card = (x, y, w, h, cor, glowOn) => {
+    ctx.save();
+    if (glowOn) { ctx.shadowColor = cor; ctx.shadowBlur = 26; }
+    rrect(x, y, w, h, 16); ctx.fillStyle = 'rgba(12,18,10,.86)'; ctx.fill();
+    ctx.restore();
+    const hl = ctx.createLinearGradient(0, y, 0, y + h);
+    hl.addColorStop(0, 'rgba(255,255,255,.09)'); hl.addColorStop(0.16, 'rgba(255,255,255,0)');
+    rrect(x, y, w, h, 16); ctx.fillStyle = hl; ctx.fill();
+    rrect(x + 1, y + 1, w - 2, h - 2, 15); ctx.strokeStyle = cor; ctx.lineWidth = 2; ctx.stroke();
+  };
+
+  // ícones vetoriais
+  const icoCana = (ix, iy) => {
+    ctx.strokeStyle = '#6fa048'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(ix, iy + 20); ctx.lineTo(ix, iy - 18); ctx.stroke();
+    ctx.strokeStyle = '#8fc85a'; ctx.lineWidth = 3;
+    for (let k = 0; k < 4; k++) { const yy = iy + 12 - k * 10;
+      ctx.beginPath(); ctx.moveTo(ix, yy); ctx.quadraticCurveTo(ix + 14, yy - 4, ix + 18, yy - 14); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(ix, yy); ctx.quadraticCurveTo(ix - 14, yy - 4, ix - 18, yy - 14); ctx.stroke(); }
+    ctx.fillStyle = '#ffd94d'; ctx.beginPath(); ctx.arc(ix + 16, iy - 18, 6, 0, 7); ctx.fill();
+  };
+  const icoFogo = (ix, iy) => {
+    const flame = (sc, col) => { ctx.fillStyle = col; ctx.beginPath();
+      ctx.moveTo(ix, iy - 22 * sc);
+      ctx.bezierCurveTo(ix + 20 * sc, iy - 6 * sc, ix + 14 * sc, iy + 16 * sc, ix, iy + 18 * sc);
+      ctx.bezierCurveTo(ix - 14 * sc, iy + 16 * sc, ix - 20 * sc, iy - 6 * sc, ix, iy - 22 * sc);
+      ctx.fill(); };
+    flame(1, '#ff6a2e'); flame(0.66, '#ffb03a'); flame(0.34, '#ffe89a');
+  };
+  const icoDuelo = (ix, iy) => {
+    for (const dir of [-1, 1]) { ctx.save(); ctx.translate(ix, iy); ctx.rotate(dir * 0.72);
+      ctx.fillStyle = '#d6dde2'; ctx.fillRect(-3, -22, 6, 34);
+      ctx.fillStyle = '#aeb8c0'; ctx.beginPath(); ctx.moveTo(-3, -22); ctx.lineTo(3, -22); ctx.lineTo(0, -30); ctx.fill();
+      ctx.fillStyle = '#8a5a2a'; ctx.fillRect(-7, 12, 14, 5); ctx.fillStyle = '#c8912e'; ctx.fillRect(-2, 12, 4, 12);
+      ctx.restore(); }
+  };
+
+  // ══════════════════ 3 CARDS DE MODO ══════════════════
+  const cw = 280, gap = 24, ch = 250, x0 = cx - (cw * 3 + gap * 2) / 2, cyc = 150;
+  const recSurv = Number(localStorage.getItem(CFG.CHAVE_SURV)) || 0;
+
+  // -- Card 1: CAMPANHA --
+  { const X = x0;
+    card(X, cyc, cw, ch, '#7cc85a', false);
+    icoCana(X + cw / 2, cyc + 54);
+    ctx.fillStyle = '#eef7e2'; ctx.font = '800 22px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('CAMPANHA', X + cw / 2, cyc + 100);
+    ctx.fillStyle = '#9fbf8a'; ctx.font = '12px "Courier New", monospace';
+    ctx.fillText('colha, venda e sobreviva à safra', X + cw / 2, cyc + 122);
+    // seletor de dias
+    const sy = cyc + 150, dc = G.diasCampanha;
+    ctx.fillStyle = 'rgba(0,0,0,.35)'; rrect(X + 40, sy, cw - 80, 34, 8); ctx.fill();
+    ctx.fillStyle = '#ffd94d'; ctx.font = '800 16px "Courier New", monospace';
+    ctx.fillText(dc + (dc > 1 ? ' DIAS' : ' DIA'), X + cw / 2, sy + 23);
+    ctx.fillStyle = dc > 1 ? '#ffd94d' : '#55603f'; ctx.font = '800 18px "Courier New", monospace';
+    ctx.fillText('\u25C0', X + 56, sy + 23);
+    ctx.fillStyle = dc < CFG.DIAS_MAX ? '#ffd94d' : '#55603f';
+    ctx.fillText('\u25B6', X + cw - 56, sy + 23);
+    botoesTela.push({ x: X + 40, y: sy, w: 40, h: 34, cb: () => { G.diasCampanha = Math.max(1, G.diasCampanha - 1); } });
+    botoesTela.push({ x: X + cw - 80, y: sy, w: 40, h: 34, cb: () => { G.diasCampanha = Math.min(CFG.DIAS_MAX, G.diasCampanha + 1); } });
+    // CTA
+    const by = cyc + ch - 44;
+    ctx.fillStyle = '#7cc85a'; rrect(X + 30, by, cw - 60, 32, 9); ctx.fill();
+    ctx.fillStyle = '#0e1508'; ctx.font = '800 15px "Courier New", monospace';
+    ctx.fillText('\u25B6 JOGAR', X + cw / 2, by + 21);
+    botoesTela.push({ x: X + 30, y: by, w: cw - 60, h: 32, cb: iniciarJogo });
+  }
+
+  // -- Card 2: SOBREVIVÊNCIA (destaque) --
+  { const X = x0 + cw + gap;
+    const pulse = 0.5 + 0.5 * Math.sin(t * 3);
+    ctx.save(); ctx.shadowColor = 'rgba(255,120,40,' + (0.4 + pulse * 0.4) + ')'; ctx.shadowBlur = 20 + pulse * 14;
+    card(X, cyc - 8, cw, ch + 16, '#ff8a3a', false); ctx.restore();
+    ctx.fillStyle = '#ff8a3a'; ctx.font = '700 10px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('\u2605 MAIS JOGADO', X + cw / 2, cyc + 8);
+    icoFogo(X + cw / 2, cyc + 56);
+    ctx.fillStyle = '#ffe7d0'; ctx.font = '800 21px "Segoe UI", sans-serif';
+    ctx.fillText('SOBREVIVÊNCIA', X + cw / 2, cyc + 100);
+    ctx.fillStyle = '#e8a878'; ctx.font = '12px "Courier New", monospace';
+    ctx.fillText('praga sem fim · ondas infinitas', X + cw / 2, cyc + 122);
+    ctx.fillStyle = 'rgba(0,0,0,.35)'; rrect(X + 40, cyc + 150, cw - 80, 34, 8); ctx.fill();
+    ctx.fillStyle = '#ffd94d'; ctx.font = '800 15px "Courier New", monospace';
+    ctx.fillText('\uD83C\uDFC6 ' + (recSurv ? mmss(recSurv) : '--:--'), X + cw / 2, cyc + 172);
+    const by = cyc + ch - 44;
+    const bg = ctx.createLinearGradient(X, by, X, by + 32); bg.addColorStop(0, '#ff8a3a'); bg.addColorStop(1, '#ff6a2e');
+    ctx.fillStyle = bg; rrect(X + 30, by, cw - 60, 32, 9); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = '800 15px "Courier New", monospace';
+    ctx.fillText('\u25B6 JOGAR', X + cw / 2, by + 21);
+    botoesTela.push({ x: X + 30, y: by, w: cw - 60, h: 32, cb: iniciarSurvivor });
+  }
+
+  // -- Card 3: DUELO --
+  { const X = x0 + (cw + gap) * 2;
+    card(X, cyc, cw, ch, '#8fd6e8', false);
+    icoDuelo(X + cw / 2, cyc + 54);
+    ctx.fillStyle = '#e2f2f7'; ctx.font = '800 22px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('DUELO', X + cw / 2, cyc + 100);
+    ctx.fillStyle = '#8fb8c4'; ctx.font = '12px "Courier New", monospace';
+    ctx.fillText('mesma safra · quem lucra mais vence', X + cw / 2, cyc + 122);
+    const b1 = cyc + 148, b2 = cyc + 190;
+    ctx.fillStyle = '#8fd6e8'; rrect(X + 30, b1, cw - 60, 34, 9); ctx.fill();
+    ctx.fillStyle = '#0e1508'; ctx.font = '800 14px "Courier New", monospace';
+    ctx.fillText('\uD83C\uDFC6 CRIAR DESAFIO', X + cw / 2, b1 + 22);
+    botoesTela.push({ x: X + 30, y: b1, w: cw - 60, h: 34, cb: criarDesafio });
+    ctx.fillStyle = 'rgba(0,0,0,.3)'; rrect(X + 30, b2, cw - 60, 34, 9); ctx.fill();
+    ctx.strokeStyle = '#8fd6e8'; ctx.lineWidth = 1.5; rrect(X + 30, b2, cw - 60, 34, 9); ctx.stroke();
+    ctx.fillStyle = '#cfeef7';
+    ctx.fillText('\uD83C\uDF9F ENTRAR COM CÓDIGO', X + cw / 2, b2 + 22);
+    botoesTela.push({ x: X + 30, y: b2, w: cw - 60, h: 34, cb: entrarDesafio });
+  }
+
+  // ══════════════════ BARRA INFERIOR ══════════════════
+  ctx.fillStyle = 'rgba(6,10,4,.5)'; ctx.fillRect(0, H - 44, W, 44);
+  ctx.textAlign = 'left'; ctx.fillStyle = '#cfe0b8'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('\uD83C\uDFC6 Campanha: ' + G.recDias + 'd · pico ' + $(G.recGrana), 20, H - 18);
+  ctx.textAlign = 'right';
+  const bb = (label, rx, cb) => {
+    const w = ctx.measureText(label).width + 22;
+    ctx.fillStyle = 'rgba(20,28,16,.8)'; rrect(rx - w, H - 34, w, 26, 7); ctx.fill();
+    ctx.strokeStyle = 'rgba(220,230,200,.4)'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#eef2e0'; ctx.textAlign = 'center'; ctx.fillText(label, rx - w / 2, H - 16);
+    ctx.textAlign = 'right';
+    botoesTela.push({ x: rx - w, y: H - 34, w, h: 26, cb });
+    return rx - w - 8;
+  };
+  ctx.font = '700 12px "Courier New", monospace';
+  let rx = W - 16;
+  rx = bb(mudo ? '\uD83D\uDD07' : '\uD83D\uDD0A', rx, alternarMudo);
+  rx = bb(G.telaCheia ? '\u22A1 TELA' : '\u26F6 TELA CHEIA', rx, alternarTelaCheia);
+  rx = bb('\uD83D\uDCD6 COMO JOGAR', rx, () => { G.ajuda = true; G.ajudaPag = 0; });
   ctx.textAlign = 'left';
-  chip(x + 50, y + 452, 288, 40, '\ud83c\udfc6 CRIAR DESAFIO', 'gera um código p/ enviar', true, criarDesafio);
-  chip(x + 362, y + 452, 288, 40, '\ud83c\udf9f\ufe0f ENTRAR COM C\u00d3DIGO', 'cole o c\u00f3digo do amigo', true, entrarDesafio);
-  chip(x + 50, y + 500, 288, 26, '\ud83d\udcd6 COMO JOGAR  H', null, true,
-       () => { G.ajuda = true; G.ajudaPag = 0; });
-  chip(x + 362, y + 500, 288, 26, (G.telaCheia ? '\u22a1 SAIR DA TELA' : '\u26f6 TELA CHEIA  F'), null, true,
-       alternarTelaCheia);
 }
 
 function desenharOficina() {
@@ -4489,7 +4636,7 @@ canvas.addEventListener('pointerdown', e => {
       ptrs.set(e.pointerId, z); sincDpad(); return;
     }
   }
-  if (G.fase === 'menu') { iniciarJogo(); return; }
+  if (G.fase === 'menu') return;   // toques tratados pelos cards
   if (G.fase === 'fim' && G.fimT > 0.6 && !G.duelo) { iniciarJogo(); return; }
   if (G.fase === 'plantio' && TOQUE) plantar();
 });
@@ -4571,7 +4718,7 @@ requestAnimationFrame(loop);
 /* gancho de depuração/testes: __T no console (F12) */
 globalThis.__T = {
   CFG, G, jog, nivel, canas, pedras, capis, fogos, lamas, plantios, cortadas, cinzas,
-  pecas, rastros, passaros, ARVORES, LAGOAS, pragas, defensivos, __grade: grade,
+  pecas, rastros, passaros, ARVORES, LAGOAS, pragas, defensivos, __grade: grade, botoesTela,
   api: { iniciarJogo, vender, venderDrone, abastecer, consertar, bombeiro, plantar,
          irPlantio, encerrarPlantio, caiRaio, acender, fim, sortearDia, novaCana,
          comprarUpg, update, uv, localPt, render,
