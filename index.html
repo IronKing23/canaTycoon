@@ -213,6 +213,7 @@ const CFG = {
   SURV_HP: 100, SURV_VEL: 178, SURV_IFRAME: 0.7, SURV_MAG: 74, SURV_MAXMOB: 190,
   SURV_CRIT: 0.16, SURV_CRIT_MULT: 2.2,
   MEC_GRANA_INI: 1500, MEC_EMERG_MULT: 1.8, MEC_VEL: 190, CHAVE_MEC: 'canaTycoon_mecRank',
+  MEC_TANQUE: 100, MEC_CONSUMO: 1.05, MEC_DIESEL_PRECO: 3, MEC_RESGATE: 350, MEC_DRONE_TAXA: 1.4,
   CHAVE_SURV: 'canaTycoon_survRec',
   CHAVE_DIAS: 'canaTycoon_dias',
   PLANTIO_MIN_POR_SEG: 8,            // plantio: 24h de jogo em 3 min reais
@@ -2869,11 +2870,11 @@ const MEC_PECAS = [
   { id: 'fusivel',   nome: 'Fusível',        icone: '🔌', preco: 40 },
 ];
 const MEC_DEFEITOS = [
-  { id: 'motor',      nome: 'Superaquecimento',   icone: '🌡️', cor: '#e0402e', ferr: 'chave',      peca: 'junta',     bolts: 4, vel: 0.95, zona: 0.26 },
-  { id: 'rodante',    nome: 'Esteira solta',      icone: '⛓️', cor: '#c88a2e', ferr: 'alavanca',   peca: 'elo',       bolts: 3, vel: 0.82, zona: 0.26 },
-  { id: 'filtro',     nome: 'Perda de potência',  icone: '🔽', cor: '#8a9a54', ferr: 'chave',      peca: 'filtro',    bolts: 2, vel: 1.25, zona: 0.34 },
-  { id: 'hidraulico', nome: 'Vazamento hidráulico', icone: '💧', cor: '#2e6b7c', ferr: 'chave_h',  peca: 'mangueira', bolts: 3, vel: 1.0,  zona: 0.27 },
-  { id: 'eletrico',   nome: 'Falha elétrica',     icone: '⚡', cor: '#f0c814', ferr: 'multimetro', peca: 'fusivel',   bolts: 3, vel: 1.15, zona: 0.24, diag: true },
+  { id: 'motor',      nome: 'Superaquecimento',   icone: '🌡️', cor: '#e0402e', ferr: 'chave',      peca: 'junta',     bolts: 4, vel: 0.95, zona: 0.26, mg: 'torque' },
+  { id: 'rodante',    nome: 'Esteira solta',      icone: '⛓️', cor: '#c88a2e', ferr: 'alavanca',   peca: 'elo',       bolts: 3, vel: 0.82, zona: 0.26, mg: 'tensao' },
+  { id: 'filtro',     nome: 'Perda de potência',  icone: '🔽', cor: '#8a9a54', ferr: 'chave',      peca: 'filtro',    bolts: 2, vel: 1.25, zona: 0.34, mg: 'mash' },
+  { id: 'hidraulico', nome: 'Vazamento hidráulico', icone: '💧', cor: '#2e6b7c', ferr: 'chave_h',  peca: 'mangueira', bolts: 3, vel: 1.0,  zona: 0.27, mg: 'pressao' },
+  { id: 'eletrico',   nome: 'Falha elétrica',     icone: '⚡', cor: '#f0c814', ferr: 'multimetro', peca: 'fusivel',   bolts: 2, vel: 1.15, zona: 0.24, diag: true, mg: 'fios' },
 ];
 const MEC_POS = [
   { x: 430, y: 430, nome: 'CH-570 #1', vh: 260 }, { x: 1130, y: 360, nome: 'CH-670 #2', vh: 420 },
@@ -2894,7 +2895,9 @@ function iniciarMecanico() {
   G.mec = { tela: 'selecao', mecIdx: null, talento: null, slots: 3, kit: ['chave', 'multimetro'],
     pecas: {}, grana: CFG.MEC_GRANA_INI, maquinas: [], reparo: null, depot: false, hover: null,
     producao: 0, custoPecas: 0, perdaParada: 0, manutencoes: 0, quebrasTot: 0,
-    proxQuebra: 6, t: 0, fim: false, fimT: 0, recorde: rec, novoRec: false };
+    proxQuebra: 6, t: 0, fim: false, fimT: 0, recorde: rec, novoRec: false,
+    diesel: CFG.MEC_TANQUE, custoDiesel: 0, resgate: false, drones: [], dronePainel: false,
+    capis: [], bandos: [] };
   G.pausa = false;
 }
 function escolherMec(i) {
@@ -2924,8 +2927,14 @@ function comprarPecaKit(id) {
 }
 function irCampoMec() {
   const m = G.mec;
-  m.maquinas = MEC_POS.map((p, i) => ({ id: i, x: p.x, y: p.y, nome: p.nome, vh: p.vh,
-    estado: 'ok', defeito: null, alertaT: 0, frame: 0 }));
+  m.maquinas = MEC_POS.map((p, i) => ({ id: i, x: p.x, y: p.y, baseX: p.x, baseY: p.y,
+    nome: p.nome, vh: p.vh, estado: 'ok', defeito: null, alertaT: 0, frame: rand(0, 5),
+    wAng: rand(0, 6.28), wT: rand(2, 5) }));
+  m.capis = []; for (let i = 0; i < 5; i++)
+    m.capis.push({ x: rand(200, MW - 200), y: rand(300, MH - 200), ang: rand(0, 6.28),
+      estado: 'pasta', t: rand(1, 3), flip: 1 });
+  m.bandos = []; for (let i = 0; i < 3; i++)
+    m.bandos.push({ x: rand(300, MW - 300), y: rand(400, MH - 300), n: randi(3, 5), voou: 0 });
   jog.x = MW / 2; jog.y = MH / 2; jog.ang = 0; jog.movendo = false; jog.turbo = 0;
   G.hora = CFG.HORA_INI; m.tela = 'campo'; m.t = 0; m.proxQuebra = 5;
   toast('🔧 Turno começou! Mantenha as máquinas rodando até as 22:00.', 4);
@@ -2936,14 +2945,78 @@ function moverMec(dt) {
   if (m.reparo || m.depot || m.fim) { jog.movendo = false; return; }
   let dx = (kb.dir ? 1 : 0) - (kb.esq ? 1 : 0), dy = (kb.re ? 1 : 0) - (kb.fwd ? 1 : 0);
   if (joySurv && joySurv.ativo) { dx = joySurv.dx; dy = joySurv.dy; }
-  const mag = Math.hypot(dx, dy), vel = CFG.MEC_VEL;
-  if (mag > 0.15) {
+  const semDiesel = m.diesel <= 0;
+  const mag = Math.hypot(dx, dy), vel = semDiesel ? 0 : CFG.MEC_VEL;
+  if (mag > 0.15 && !semDiesel) {
     const mm = mag < 1 ? 1 : mag;
     jog.x = clamp(jog.x + (dx / mm) * vel * dt, 40, MW - 40);
     jog.y = clamp(jog.y + (dy / mm) * vel * dt, 40, MH - 40);
     jog.ang = Math.atan2(dy, dx); jog.movendo = true; jog.frame += dt * 9;
+    m.diesel = Math.max(0, m.diesel - CFG.MEC_CONSUMO * dt);
+    if (m.diesel <= 0) { toast('⛽ PANE SECA! Peça diesel por drone (' + (MOBILE ? 'botão 🚁' : 'ESPAÇO') + ')', 3.5); SFX.multa(); }
     if (Math.random() < dt * 6) rastros.push({ x: jog.x, y: jog.y, ang: jog.ang, t: 0 });
+    if (Math.random() < dt * 9) part(jog.x - Math.cos(jog.ang) * 26, jog.y - Math.sin(jog.ang) * 26,
+      { vx: [-16, 16], vy: [-14, 4], vida: [.3, .8], tam: [2, 4],
+        cores: ['rgba(122,100,66,.5)', 'rgba(95,80,54,.4)'], grav: -8, n: 1 });
   } else jog.movendo = false;
+}
+
+/* ── drones de entrega (peças e diesel) ─────────────────────────── */
+function pedirDrone(pecaId) {                                  // pecaId ou 'diesel'
+  const m = G.mec;
+  const custo = pecaId === 'diesel' ? CFG.MEC_RESGATE
+    : Math.round(PECA(pecaId).preco * m.pecaMul * CFG.MEC_DRONE_TAXA);
+  if (pecaId === 'diesel') { if (m.resgate) return; }
+  if (m.grana < custo && pecaId !== 'diesel') { toast('💰 Sem grana pro drone (R$' + custo + ')'); SFX.multa(); return; }
+  m.grana -= custo;
+  if (pecaId === 'diesel') { m.custoDiesel += custo; m.resgate = true;
+    toast('🚁 Drone-tanque a caminho! (R$' + custo + ')', 3); }
+  else { m.custoPecas += custo; toast('🚁 ' + PECA(pecaId).icone + ' ' + PECA(pecaId).nome + ' a caminho (R$' + custo + ')', 2.5); }
+  m.drones.push({ carga: pecaId, x: USINA.x + 125, y: USINA.y + 100, fase: 'indo', rot: 0 });
+  SFX.peca();
+}
+function atualizarDronesMec(dt) {
+  const m = G.mec;
+  for (let i = m.drones.length - 1; i >= 0; i--) {
+    const d = m.drones[i]; d.rot += dt * 30;
+    const tx = d.fase === 'indo' ? jog.x : USINA.x + 125;
+    const ty = d.fase === 'indo' ? jog.y - 6 : USINA.y + 100;
+    const dx = tx - d.x, dy = ty - d.y, ds = Math.hypot(dx, dy) || 1, vel = 250;
+    d.x += dx / ds * vel * dt; d.y += dy / ds * vel * dt;
+    if (ds < 26) {
+      if (d.fase === 'indo') {
+        d.fase = 'volta';
+        if (d.carga === 'diesel') { m.diesel = Math.min(CFG.MEC_TANQUE, m.diesel + 55); m.resgate = false;
+          flut(jog.x, jog.y - 44, '⛽ +55L', '#8fd6e8'); }
+        else { m.pecas[d.carga] = (m.pecas[d.carga] || 0) + 1;
+          flut(jog.x, jog.y - 44, PECA(d.carga).icone + ' entregue!', '#8fe36a'); }
+        SFX.peca();
+        part(jog.x, jog.y - 24, { vx: [-60, 60], vy: [-70, 10], vida: [.2, .5], tam: [2, 3],
+          cores: ['#8fd6e8', '#fff'], grav: 140, n: 8 });
+      } else m.drones.splice(i, 1);
+    }
+  }
+}
+function desenharDrones() {
+  const m = G.mec;
+  for (const d of m.drones) {
+    ctx.fillStyle = 'rgba(10,14,8,.25)';
+    ctx.beginPath(); ctx.ellipse(d.x, d.y + 30, 14, 5, 0, 0, 7); ctx.fill();
+    ctx.save(); ctx.translate(d.x, d.y);
+    ctx.strokeStyle = '#9aa8b4'; ctx.lineWidth = 1.5;                       // fio + carga
+    ctx.beginPath(); ctx.moveTo(0, 4); ctx.lineTo(0, 14); ctx.stroke();
+    if (d.fase === 'indo') { ctx.font = '12px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(d.carga === 'diesel' ? '🛢️' : PECA(d.carga).icone, 0, 24); }
+    ctx.fillStyle = '#37444e'; ctx.fillRect(-9, -3, 18, 6);                 // corpo
+    ctx.strokeStyle = '#5a6a76'; ctx.lineWidth = 2;                         // braços
+    ctx.beginPath(); ctx.moveTo(-9, -2); ctx.lineTo(-16, -8); ctx.moveTo(9, -2); ctx.lineTo(16, -8); ctx.stroke();
+    for (const bx of [-16, 16]) { ctx.save(); ctx.translate(bx, -9); ctx.rotate(d.rot);   // hélices
+      ctx.strokeStyle = 'rgba(210,220,228,.85)'; ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.moveTo(-7, 0); ctx.lineTo(7, 0); ctx.stroke(); ctx.restore(); }
+    ctx.fillStyle = Math.floor(G.t * 6) % 2 ? '#ff5a4a' : '#4ade80';        // led
+    ctx.fillRect(-2, -5, 4, 2);
+    ctx.restore(); ctx.textAlign = 'left';
+  }
 }
 function quebrarMaquina() {
   const m = G.mec, ok = m.maquinas.filter(q => q.estado === 'ok');
@@ -2965,7 +3038,9 @@ function acharAlvoMec() {                                       // máquina/dep�
 }
 function acaoMec() {                                            // botão/ESPAÇO no campo
   const m = G.mec; if (m.reparo || m.fim) return;
+  if (m.dronePainel) { m.dronePainel = false; return; }
   if (m.depot) { m.depot = false; return; }
+  if (m.diesel <= 0 && !m.resgate) { pedirDrone('diesel'); return; }
   const alvo = m.hover;
   if (!alvo) return;
   if (alvo.tipo === 'depot') { m.depot = true; SFX.moeda(); return; }
@@ -2978,30 +3053,73 @@ function novaZonaMec(r) {
 }
 function iniciarReparoMec(q) {
   const m = G.mec, d = DEF(q.defeito);
-  if (!m.kit.includes(d.ferr)) { toast('🧰 Falta ' + FERR(d.ferr).nome + ' no kit — vá ao depósito'); SFX.multa(); return; }
+  if (!m.kit.includes(d.ferr)) { toast('🧰 Falta ' + FERR(d.ferr).nome + ' no kit — vá ao depósito ou peça 🚁'); SFX.multa(); return; }
   let emerg = false;
   if (!(m.pecas[d.peca] > 0)) {
     const pe = Math.round(PECA(d.peca).preco * m.pecaMul * CFG.MEC_EMERG_MULT);
     if (m.grana >= pe) { emerg = true; toast('💸 Sem ' + PECA(d.peca).nome + ' — compra de emergência (R$' + pe + ')', 3); }
-    else { toast('📦 Sem ' + PECA(d.peca).nome + ' e sem grana — reabasteça no depósito', 3); SFX.multa(); return; }
+    else { toast('📦 Sem ' + PECA(d.peca).nome + ' e sem grana — depósito ou drone 🚁', 3); SFX.multa(); return; }
   }
   q.estado = 'reparando';
-  const r = { maq: q, def: d, bolts: d.bolts + (d.diag ? 1 : 0), feitos: 0,
-    vel: d.vel / (m.velMul || 1) * (d.diag ? 1 : 1), zona: d.zona, penal: 0, emerg };
-  novaZonaMec(r); m.reparo = r; SFX.reparo();
+  const vm = m.velMul || 1;
+  const r = { maq: q, def: d, mg: d.mg || 'torque', bolts: d.bolts, feitos: 0, penal: 0, emerg };
+  if (r.mg === 'torque') { r.vel = d.vel / vm; r.zona = d.zona; novaZonaMec(r); }
+  else if (r.mg === 'tensao') { r.fase = rand(0, 6.28); r.velT = 3.0 / vm; r.z = 0.13; }
+  else if (r.mg === 'mash') { r.prog = 0; r.taxa = 0.15 * vm; }
+  else if (r.mg === 'pressao') { r.press = 0; r.enchendo = false; novaFaixaMec(r, vm); }
+  else if (r.mg === 'fios') { novaSeqMec(r, 4); }
+  m.reparo = r; SFX.reparo();
 }
-function torqueMec() {
-  const r = G.mec.reparo, m = G.mec; if (!r || r.penal > 0) return;
-  if (r.marcador >= r.zi && r.marcador <= r.zf) {           // acertou o ponto
-    r.feitos++; SFX.reparo();
+function novaFaixaMec(r, vm) {
+  const larg = 0.15 * Math.sqrt(vm || 1);
+  const c = rand(0.5, 0.86 - larg / 2);
+  r.fa = c - larg / 2; r.fb = c + larg / 2;
+}
+function novaSeqMec(r, n) {
+  r.seq = []; for (let i = 0; i < n; i++) r.seq.push(randi(0, 3));
+  r.pos = 0; r.mostraT = 0; r.mostrando = true;
+}
+function torqueMec() {                                        // ação primária do reparo
+  const m = G.mec, r = m.reparo; if (!r || r.penal > 0) return;
+  const acerta = () => { r.feitos++; SFX.reparo();
     flut(jog.x, jog.y - 40, '✔', '#8fe36a');
     part(jog.x, jog.y - 20, { vx: [-50, 50], vy: [-70, -10], vida: [.2, .5], tam: [2, 3],
       cores: ['#ffd94d', '#fff'], grav: 160, n: 4 });
-    if (r.feitos >= r.bolts) return finalizarReparoMec();
-    r.zona = Math.max(0.16, r.zona * 0.92); novaZonaMec(r);
-  } else {                                                    // errou
-    if (!m.semFalha) { r.penal = 0.4; SFX.multa(); tremer(0.08); }
+    if (r.feitos >= r.bolts) { finalizarReparoMec(); return true; } return false; };
+  const erra = () => { if (!m.semFalha) { r.penal = 0.45; SFX.multa(); tremer(0.08); } };
+  if (r.mg === 'torque') {
+    if (r.marcador >= r.zi && r.marcador <= r.zf) { if (acerta()) return;
+      r.zona = Math.max(0.16, r.zona * 0.92); novaZonaMec(r); }
+    else erra();
+  } else if (r.mg === 'tensao') {
+    const pos = 0.5 + 0.45 * Math.sin(r.fase);
+    if (Math.abs(pos - 0.5) <= r.z) { if (acerta()) return;
+      r.z = Math.max(0.07, r.z * 0.8); r.velT *= 1.18; }
+    else erra();
+  } else if (r.mg === 'mash') {
+    r.prog = Math.min(1, r.prog + r.taxa);
+    part(jog.x, jog.y - 20, { vx: [-30, 30], vy: [-50, -8], vida: [.12, .3], tam: [1, 2],
+      cores: ['#cfd6dc'], grav: 100, n: 1 });
+    if (r.prog >= 1) { r.prog = 0; if (acerta()) return; }
+  } else if (r.mg === 'pressao') {
+    if (!r.enchendo) { r.enchendo = true; }
+    else { r.enchendo = false;
+      if (r.press >= r.fa && r.press <= r.fb) { if (acerta()) return;
+        r.press = 0; novaFaixaMec(r, G.mec.velMul); }
+      else { erra(); r.press = 0; } }
   }
+}
+function fioMec(i) {                                           // input do mini-game elétrico
+  const m = G.mec, r = m.reparo; if (!r || r.mg !== 'fios' || r.mostrando || r.penal > 0) return;
+  if (i === r.seq[r.pos]) {
+    r.pos++; SFX.peca();
+    if (r.pos >= r.seq.length) {
+      r.feitos++; SFX.reparo(); flut(jog.x, jog.y - 40, '✔ circuito', '#8fe36a');
+      if (r.feitos >= r.bolts) return finalizarReparoMec();
+      novaSeqMec(r, 5);                                        // 2ª sequência, mais longa
+    }
+  } else { if (!m.semFalha) { r.penal = 0.5; SFX.multa(); tremer(0.08); }
+    r.pos = 0; r.mostraT = 0; r.mostrando = true; }
 }
 function finalizarReparoMec() {
   const m = G.mec, r = m.reparo, q = r.maq, d = r.def;
@@ -3046,16 +3164,102 @@ function atualizarMecanico(dt) {
     if (m.proxQuebra <= 0) { quebrarMaquina();
       m.proxQuebra = Math.max(6, rand(11, 19) - m.t * 0.02); }
   }
-  for (const q of m.maquinas) if (q.estado !== 'ok') q.frame += dt;
+  for (const q of m.maquinas) {
+    q.frame += dt * (q.estado === 'ok' ? 1.4 : 1);
+    if (q.estado === 'ok') {                                     // colhedora trabalhando
+      q.wT -= dt;
+      if (q.wT <= 0 || dist2(q.x, q.y, q.baseX, q.baseY) > 95 * 95) {
+        q.wAng = q.wT <= 0 ? q.wAng + Math.PI + rand(-0.5, 0.5)
+                           : Math.atan2(q.baseY - q.y, q.baseX - q.x);
+        q.wT = rand(2.5, 5.5);
+      }
+      q.x = clamp(q.x + Math.cos(q.wAng) * 24 * dt, 80, MW - 80);
+      q.y = clamp(q.y + Math.sin(q.wAng) * 24 * dt, 80, MH - 80);
+      if (Math.random() < dt * 5) part(q.x - Math.cos(q.wAng) * 24, q.y - Math.sin(q.wAng) * 24,
+        { vx: [-24, 24], vy: [-34, -6], vida: [.3, .8], tam: [1, 3],
+          cores: ['#e8d88a', '#d0be6a', 'rgba(122,100,66,.4)'], grav: 60, n: 1 });
+    }
+  }
+  for (const c of m.capis) {                                     // capivaras
+    c.t -= dt;
+    const dj = dist2(c.x, c.y, jog.x, jog.y);
+    if (c.estado === 'pasta') {
+      if (dj < 130 * 130) { c.estado = 'foge'; c.t = 1.7;
+        c.ang = Math.atan2(c.y - jog.y, c.x - jog.x); SFX.capi && Math.random() < 0.3 && SFX.capi(); }
+      else { if (c.t <= 0) { c.ang = rand(0, 6.28); c.t = rand(1.5, 4); }
+        if (Math.random() < 0.5) { c.x += Math.cos(c.ang) * 9 * dt; c.y += Math.sin(c.ang) * 9 * dt; } }
+    } else { c.x += Math.cos(c.ang) * 125 * dt; c.y += Math.sin(c.ang) * 125 * dt;
+      if (c.t <= 0) { c.estado = 'pasta'; c.t = rand(2, 4); } }
+    c.x = clamp(c.x, 60, MW - 60); c.y = clamp(c.y, 60, MH - 60);
+    c.flip = Math.cos(c.ang) < 0 ? -1 : 1;
+  }
+  for (const b of m.bandos) {                                    // pássaros
+    if (b.voou > 0) { b.voou -= dt;
+      if (b.voou <= 0) { b.x = rand(300, MW - 300); b.y = rand(400, MH - 300); } }
+    else if (dist2(b.x, b.y, jog.x, jog.y) < 110 * 110) {
+      b.voou = rand(6, 12);
+      part(b.x, b.y, { vx: [-70, 70], vy: [-150, -70], vida: [.5, 1.1], tam: [2, 3],
+        cores: ['#3a3630', '#54504a', '#28241e'], grav: -40, n: b.n * 2 });
+    }
+  }
   const r = m.reparo;
-  if (r) { if (r.penal > 0) r.penal -= dt;
-    else { r.marcador += r.dir * r.vel * dt;
-      if (r.marcador > 1) { r.marcador = 1; r.dir = -1; } if (r.marcador < 0) { r.marcador = 0; r.dir = 1; } } }
+  if (r) {
+    if (r.penal > 0) r.penal -= dt;
+    else if (r.mg === 'torque') { r.marcador += r.dir * r.vel * dt;
+      if (r.marcador > 1) { r.marcador = 1; r.dir = -1; } if (r.marcador < 0) { r.marcador = 0; r.dir = 1; } }
+    else if (r.mg === 'tensao') r.fase += r.velT * dt;
+    else if (r.mg === 'mash') r.prog = Math.max(0, r.prog - 0.42 * dt);
+    else if (r.mg === 'pressao') { if (r.enchendo) { r.press += 0.5 * dt;
+      if (r.press > 1) { r.press = 0; r.enchendo = false;
+        if (!m.semFalha) { r.penal = 0.5; SFX.multa(); tremer(0.1); }
+        part(jog.x, jog.y - 24, { vx: [-70, 70], vy: [-90, -10], vida: [.2, .5], tam: [2, 3],
+          cores: ['#7fd6e8', '#fff'], grav: 170, n: 10 }); } } }
+    else if (r.mg === 'fios' && r.mostrando) { r.mostraT += dt;
+      if (r.mostraT > r.seq.length * 0.55 + 0.4) r.mostrando = false; }
+  }
+  atualizarDronesMec(dt);
   if (!m.reparo && !m.depot) moverMec(dt);
   m.hover = (m.reparo || m.depot || m.fim) ? null : acharAlvoMec();
   relogioMec(dt);
 }
 
+let NOITE = null, NOITEx = null;
+function escuridaoMec() {                                        // 0 (dia) → 0.58 (noite)
+  const h = G.hora;
+  return h <= 1080 ? 0 : Math.min(0.58, (h - 1080) / 180 * 0.58);
+}
+function desenharNoiteMec() {
+  const m = G.mec, h = G.hora;
+  const ent = Math.max(0, 0.20 * (1 - Math.abs(h - 1065) / 95));  // entardecer ~17:45
+  if (ent > 0.01) { ctx.fillStyle = 'rgba(255,138,48,' + ent.toFixed(3) + ')'; ctx.fillRect(0, 0, W, H); }
+  const esc = escuridaoMec();
+  if (esc < 0.02) return;
+  if (!NOITE) { NOITE = document.createElement('canvas'); NOITE.width = W; NOITE.height = H;
+    NOITEx = NOITE.getContext('2d'); }
+  const nx = NOITEx; nx.clearRect(0, 0, W, H);
+  nx.fillStyle = 'rgba(12,18,46,' + esc.toFixed(3) + ')'; nx.fillRect(0, 0, W, H);
+  nx.globalCompositeOperation = 'destination-out';
+  const Z = MOBILE ? CFG.ZOOM_MOBILE : 1;
+  const furo = (wx, wy, r, a) => {
+    const sx = (wx - cam.x) * Z, sy = (wy - cam.y) * Z;
+    if (sx < -160 || sx > W + 160 || sy < -160 || sy > H + 160) return;
+    const g = nx.createRadialGradient(sx, sy, 2, sx, sy, r * Z);
+    g.addColorStop(0, 'rgba(0,0,0,' + a + ')'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    nx.fillStyle = g; nx.beginPath(); nx.arc(sx, sy, r * Z, 0, 7); nx.fill();
+  };
+  furo(jog.x, jog.y, 48, 0.9);                                   // caminhão + cone dos faróis
+  for (let k = 1; k <= 3; k++)
+    furo(jog.x + Math.cos(jog.ang) * k * 34, jog.y + Math.sin(jog.ang) * k * 34, 28 + k * 9, 0.82 - k * 0.17);
+  furo(USINA.zona.x + USINA.zona.w / 2, USINA.zona.y + USINA.zona.h / 2, 85, 0.75);  // depósito
+  for (const q of m.maquinas) {
+    if (q.estado === 'ok') { furo(q.x, q.y, 34, 0.55);
+      furo(q.x + Math.cos(q.wAng) * 36, q.y + Math.sin(q.wAng) * 36, 25, 0.45); }
+    else furo(q.x, q.y, 42, 0.32 + 0.32 * Math.abs(Math.sin(q.frame * 6)));         // giroflex
+  }
+  for (const d of m.drones) furo(d.x, d.y, 22, 0.5);
+  nx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(NOITE, 0, 0);
+}
 function rr(x, y, w, h, r) {
   ctx.beginPath(); ctx.moveTo(x + r, y);
   ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
@@ -3176,7 +3380,8 @@ function desenharMaquina(q) {
   ctx.fillStyle = 'rgba(10,14,8,.3)';
   ctx.beginPath(); ctx.ellipse(q.x, q.y + 16, 30, 12, 0, 0, 7); ctx.fill();
   ctx.save(); ctx.translate(q.x + sh, q.y);
-  ctx.drawImage(SPR.colhedora[0], -28, -18);
+  if (!quebrada) ctx.rotate(Math.cos(q.wAng) < 0 ? Math.PI + q.wAng : q.wAng) , ctx.scale(Math.cos(q.wAng) < 0 ? -1 : 1, 1);
+  ctx.drawImage(SPR.colhedora[quebrada ? 0 : Math.floor(q.frame * 6) % 2], -28, -18);
   if (quebrada) { ctx.fillStyle = 'rgba(224,64,46,.28)'; ctx.beginPath(); ctx.arc(0, 0, 30, 0, 7); ctx.fill(); }
   ctx.restore();
   // nome + valor/h
@@ -3218,18 +3423,47 @@ function renderMecCampo() {
     ctx.fillStyle = 'rgba(58,45,26,' + a.toFixed(3) + ')';
     const si = Math.sin(r.ang), co = Math.cos(r.ang);
     ctx.fillRect(r.x - si * 10 - 2, r.y + co * 10 - 2, 4, 4); ctx.fillRect(r.x + si * 10 - 2, r.y - co * 10 - 2, 4, 4); }
+  for (const c of m.capis) {                                     // capivaras
+    ctx.save(); ctx.translate(c.x, c.y); ctx.scale(c.flip, 1);
+    ctx.fillStyle = 'rgba(10,14,8,.25)'; ctx.beginPath(); ctx.ellipse(0, 9, 13, 5, 0, 0, 7); ctx.fill();
+    const hop = c.estado === 'foge' ? Math.abs(Math.sin(G.t * 14)) * 3 : 0;
+    ctx.drawImage(SPR.capi[Math.floor(G.t * (c.estado === 'foge' ? 12 : 3)) % 2], -14, -12 - hop); ctx.restore();
+  }
+  for (const b of m.bandos) if (b.voou <= 0) {                   // pássaros no chão
+    for (let k = 0; k < b.n; k++) { const bx2 = b.x + Math.sin(k * 2.4) * 16, by2 = b.y + Math.cos(k * 1.7) * 10;
+      ctx.fillStyle = '#3a362e'; ctx.fillRect(bx2 - 2, by2 - 2, 4, 3);
+      ctx.fillStyle = '#54504a'; ctx.fillRect(bx2 - 1, by2 - 4, 2, 2); }
+  }
   for (const q of m.maquinas) desenharMaquina(q);
-  // VAN do mecânico
-  { ctx.fillStyle = 'rgba(10,14,8,.34)'; ctx.beginPath(); ctx.ellipse(jog.x, jog.y + 12, 24, 10, 0, 0, 7); ctx.fill();
+  desenharDrones();
+  // CAMINHÃO-OFICINA do mecânico
+  { ctx.fillStyle = 'rgba(10,14,8,.34)'; ctx.beginPath(); ctx.ellipse(jog.x, jog.y + 14, 32, 11, 0, 0, 7); ctx.fill();
     ctx.save(); ctx.translate(jog.x, jog.y); ctx.rotate(jog.ang);
-    ctx.fillStyle = '#2e6b9c'; rr(-20, -13, 40, 26, 6); ctx.fill();
-    ctx.fillStyle = '#3f86bd'; rr(6, -11, 12, 22, 5); ctx.fill();
-    ctx.fillStyle = '#bfe0f2'; rr(9, -8, 7, 16, 3); ctx.fill();
-    ctx.fillStyle = '#1a1a1a'; ctx.fillRect(-16, -15, 8, 3); ctx.fillRect(-16, 12, 8, 3); ctx.fillRect(8, -15, 8, 3); ctx.fillRect(8, 12, 8, 3);
-    ctx.fillStyle = '#ffd94d'; ctx.font = '700 9px "Courier New", monospace'; ctx.textAlign = 'center'; ctx.fillText('🔧', -6, 3);
-    const bp = 0.5 + 0.5 * Math.sin(G.t * 9);
-    ctx.fillStyle = 'rgba(255,220,60,' + (0.4 + bp * 0.6).toFixed(2) + ')';
-    ctx.beginPath(); ctx.arc(-6, -6, 3.5 + bp * 2, 0, 7); ctx.fill(); ctx.restore(); ctx.textAlign = 'left'; }
+    const rodinha = (rx2) => { ctx.fillStyle = '#14181c'; ctx.fillRect(rx2, -17, 10, 4); ctx.fillRect(rx2, 13, 10, 4);
+      ctx.fillStyle = '#3a4248'; ctx.fillRect(rx2 + 3, -16, 4, 2); ctx.fillRect(rx2 + 3, 14, 4, 2); };
+    rodinha(-27); rodinha(-15); rodinha(14);                               // 3 eixos
+    ctx.fillStyle = '#20282e'; rr(-32, -12, 64, 24, 4); ctx.fill();        // chassi
+    ctx.fillStyle = '#d9822e'; rr(-31, -14, 40, 28, 5); ctx.fill();        // baú oficina laranja
+    ctx.fillStyle = '#b8681e'; rr(-31, 6, 40, 8, 4); ctx.fill();           // saia inferior
+    ctx.fillStyle = '#8f9aa4'; ctx.fillRect(-24, -10, 12, 20);             // porta de correr
+    ctx.strokeStyle = '#6a7680'; ctx.lineWidth = 1;
+    for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.moveTo(-22 + k * 4, -9); ctx.lineTo(-22 + k * 4, 9); ctx.stroke(); }
+    ctx.fillStyle = '#fff'; ctx.font = '10px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('🔧', -1, 4);                                             // marca da oficina
+    ctx.fillStyle = '#2e5a7c'; rr(10, -12, 20, 24, 4); ctx.fill();         // cabine azul
+    ctx.fillStyle = '#bfe0f2'; rr(20, -9, 8, 18, 2); ctx.fill();           // para-brisa
+    ctx.fillStyle = '#244a66'; ctx.fillRect(10, -12, 4, 24);               // coluna
+    if (escuridaoMec() > 0.06) {                                           // cones de luz
+      ctx.fillStyle = 'rgba(255,238,170,.14)';
+      for (const fy of [-7, 7]) { ctx.beginPath(); ctx.moveTo(30, fy);
+        ctx.lineTo(108, fy - 17); ctx.lineTo(108, fy + 17); ctx.closePath(); ctx.fill(); }
+    }
+    ctx.fillStyle = '#ffe9a0'; ctx.fillRect(29, -10, 3, 5); ctx.fillRect(29, 5, 3, 5);   // faróis
+    const bp = 0.5 + 0.5 * Math.sin(G.t * 10);                             // giroflex laranja
+    ctx.fillStyle = 'rgba(255,150,40,' + (0.5 + bp * 0.5).toFixed(2) + ')';
+    ctx.beginPath(); ctx.arc(-11, -14, 3 + bp * 2.4, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ffb03a'; ctx.fillRect(-13, -16, 4, 3);
+    ctx.restore(); ctx.textAlign = 'left'; }
   // prompt de ação sobre o alvo
   if (m.hover) {
     const tx = m.hover.tipo === 'depot' ? USINA.zona.x + USINA.zona.w / 2 : m.hover.maq.x;
@@ -3244,6 +3478,7 @@ function renderMecCampo() {
   ctx.globalAlpha = 1; ctx.font = '700 13px "Courier New", monospace';
   for (const f of flutu) { ctx.globalAlpha = clamp(1 - f.t / 1.3, 0, 1); ctx.fillStyle = f.cor; ctx.fillText(f.txt, f.x - 14, f.y - f.t * 30); }
   ctx.globalAlpha = 1; ctx.restore();
+  desenharNoiteMec();
 }
 
 function desenharMecHUD() {
@@ -3257,12 +3492,39 @@ function desenharMecHUD() {
   ctx.fillStyle = tarde && Math.floor(G.t * 4) % 2 === 0 ? '#ff5a4a' : '#eef2e0';
   ctx.fillText(hhmm(G.hora), W / 2, grande ? 40 : 34);
   ctx.font = '700 10px "Courier New", monospace'; ctx.fillStyle = '#9fb8a8';
-  ctx.fillText('fim às 22:00', W / 2, grande ? 56 : 48);
+  ctx.fillText((escuridaoMec() > 0.2 ? '🌙 ' : '') + 'fim às 22:00', W / 2, grande ? 56 : 48);
   // grana
   ctx.textAlign = 'left'; ctx.fillStyle = '#ffd94d'; ctx.font = '800 ' + (grande ? 24 : 20) + 'px "Courier New", monospace';
   ctx.fillText('R$ ' + Math.floor(m.grana), 16, grande ? 40 : 34);
   ctx.fillStyle = '#7fd47f'; ctx.font = '700 11px "Courier New", monospace';
   ctx.fillText('+R$' + Math.round(taxa) + '/h rodando', 16, grande ? 56 : 48);
+  { const dw = 84, dx2 = 172, dy2 = grande ? 26 : 20, pct = m.diesel / CFG.MEC_TANQUE;   // diesel
+    const baixo = pct < 0.25, pisca = baixo && Math.floor(G.t * 4) % 2 === 0;
+    ctx.font = (grande ? 16 : 14) + 'px "Segoe UI", sans-serif';
+    ctx.fillStyle = pisca ? '#ff5a4a' : '#cfe0e8'; ctx.fillText('⛽', dx2 - 20, dy2 + 11);
+    ctx.fillStyle = 'rgba(0,0,0,.5)'; rr(dx2, dy2, dw, 12, 6); ctx.fill();
+    ctx.fillStyle = pct > 0.5 ? '#7fd47f' : pct > 0.25 ? '#ffb03a' : '#ff5a4a';
+    if (pct > 0.01) { rr(dx2 + 1, dy2 + 1, (dw - 2) * pct, 10, 5); ctx.fill(); }
+    ctx.strokeStyle = 'rgba(220,230,238,.35)'; ctx.lineWidth = 1; rr(dx2, dy2, dw, 12, 6); ctx.stroke(); }
+  { const bs = grande ? 52 : 42, bx3 = W - bs - 12, by3 = H - (grande ? 148 : 120);      // botão drone
+    ctx.fillStyle = 'rgba(20,32,42,.9)'; rr(bx3, by3, bs, bs, 10); ctx.fill();
+    ctx.strokeStyle = '#8fd6e8'; ctx.lineWidth = 2; rr(bx3, by3, bs, bs, 10); ctx.stroke();
+    ctx.font = (grande ? 24 : 20) + 'px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff'; ctx.fillText('🚁', bx3 + bs / 2, by3 + bs / 2 + 7);
+    if (!grande) { ctx.font = '700 9px "Courier New", monospace'; ctx.fillStyle = '#8fd6e8';
+      ctx.fillText('Q', bx3 + bs / 2, by3 + bs - 4); }
+    botoesTela.push({ x: bx3, y: by3, w: bs, h: bs, cb: () => { m.dronePainel = !m.dronePainel; } }); ctx.textAlign = 'left'; }
+  if (m.diesel <= 0) { const pk = Math.floor(G.t * 3) % 2 === 0;
+    ctx.fillStyle = pk ? '#ff5a4a' : '#ffb03a'; ctx.font = '800 ' + (grande ? 20 : 17) + 'px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('⛽ PANE SECA — ' + (m.resgate ? 'drone-tanque a caminho…' : (grande ? 'toque em CHAMAR DRONE' : 'ESPAÇO chama o drone-tanque')), W / 2, grande ? 100 : 86);
+    if (!m.resgate && grande) { const bw4 = 220, bx4 = W / 2 - bw4 / 2, by4 = 112;
+      ctx.fillStyle = 'rgba(120,40,30,.92)'; rr(bx4, by4, bw4, 44, 10); ctx.fill();
+      ctx.strokeStyle = '#ff8a6a'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#ffe0d8'; ctx.font = '800 14px "Courier New", monospace';
+      ctx.fillText('🚁 CHAMAR DRONE R$' + CFG.MEC_RESGATE, W / 2, by4 + 28);
+      botoesTela.push({ x: bx4, y: by4, w: bw4, h: 44, cb: () => pedirDrone('diesel') }); }
+    ctx.textAlign = 'left'; }
   // status máquinas + manutenções
   ctx.textAlign = 'right'; ctx.font = '800 ' + (grande ? 20 : 17) + 'px "Courier New", monospace';
   ctx.fillStyle = rodando === tot ? '#7fd47f' : '#ffb03a';
@@ -3309,38 +3571,144 @@ function desenharMecHUD() {
 function desenharMecReparo() {
   const m = G.mec, r = m.reparo, d = r.def;
   ctx.fillStyle = 'rgba(6,10,14,.72)'; ctx.fillRect(0, 0, W, H);
-  const { x, y } = painel(560, 300);
+  const { x, y } = painel(560, 310);
   ctx.textAlign = 'center';
-  ctx.font = '34px "Segoe UI", sans-serif'; ctx.fillStyle = d.cor; ctx.fillText(d.icone, W / 2, y + 52);
-  ctx.fillStyle = '#eef2e0'; ctx.font = '800 22px "Courier New", monospace'; ctx.fillText(d.nome, W / 2, y + 84);
-  ctx.fillStyle = '#9fb8a8'; ctx.font = '700 12px "Courier New", monospace';
-  ctx.fillText(r.maq.nome + '  ·  ' + FERR(d.ferr).icone + ' ' + FERR(d.ferr).nome + '  +  ' + PECA(d.peca).icone + ' ' + PECA(d.peca).nome, W / 2, y + 106);
-  if (r.emerg) { ctx.fillStyle = '#ff9a3a'; ctx.font = '700 11px "Courier New", monospace';
-    ctx.fillText('💸 peça de emergência', W / 2, y + 122); }
-  // barra de torque
-  const bx = x + 40, bw = 480, by = y + 150, bh = 34;
-  ctx.fillStyle = 'rgba(0,0,0,.5)'; rr(bx, by, bw, bh, 8); ctx.fill();
-  ctx.fillStyle = 'rgba(95,191,106,.5)'; ctx.fillRect(bx + r.zi * bw, by, (r.zf - r.zi) * bw, bh);
-  ctx.strokeStyle = '#5fbf6a'; ctx.lineWidth = 2; ctx.strokeRect(bx + r.zi * bw, by, (r.zf - r.zi) * bw, bh);
-  const mx = bx + r.marcador * bw;
-  ctx.fillStyle = r.penal > 0 ? '#ff5a4a' : '#ffd94d'; ctx.fillRect(mx - 3, by - 6, 6, bh + 12);
-  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(mx, by - 8); ctx.lineTo(mx - 5, by - 16); ctx.lineTo(mx + 5, by - 16); ctx.fill();
-  // parafusos
-  for (let i = 0; i < r.bolts; i++) { ctx.fillStyle = i < r.feitos ? '#5fbf6a' : '#55603f';
-    ctx.beginPath(); ctx.arc(bx + 20 + i * 26, by + bh + 22, 7, 0, 7); ctx.fill();
-    ctx.fillStyle = i < r.feitos ? '#0e1508' : '#8a9a7a'; ctx.font = '700 10px "Courier New", monospace'; ctx.textAlign = 'center';
-    ctx.fillText(i < r.feitos ? '✔' : '✚', bx + 20 + i * 26, by + bh + 26); }
-  ctx.textAlign = 'center'; ctx.fillStyle = '#cfe0b8'; ctx.font = '700 13px "Courier New", monospace';
-  ctx.fillText(r.feitos + ' / ' + r.bolts + ' apertos', W / 2, by + bh + 52);
-  // botão torque
-  const tb = MOBILE ? 64 : 44, tw = 260, tx = W / 2 - tw / 2, ty = y + 250;
-  ctx.fillStyle = r.penal > 0 ? 'rgba(90,50,40,.8)' : '#f0c814'; rr(tx, ty, tw, tb, 10); ctx.fill();
-  ctx.fillStyle = r.penal > 0 ? '#ffb0a0' : '#0e1508'; ctx.font = '800 ' + (MOBILE ? 20 : 16) + 'px "Courier New", monospace';
-  ctx.fillText(r.penal > 0 ? '✋ escapou!' : '🔧 APERTAR (ESPAÇO)', W / 2, ty + tb / 2 + 6);
-  botoesTela.push({ x: tx, y: ty, w: tw, h: tb, cb: torqueMec });
+  ctx.font = '30px "Segoe UI", sans-serif'; ctx.fillStyle = d.cor; ctx.fillText(d.icone, W / 2, y + 44);
+  ctx.fillStyle = '#eef2e0'; ctx.font = '800 21px "Courier New", monospace'; ctx.fillText(d.nome, W / 2, y + 74);
+  ctx.fillStyle = '#9fb8a8'; ctx.font = '700 11px "Courier New", monospace';
+  ctx.fillText(r.maq.nome + '  ·  ' + FERR(d.ferr).icone + ' ' + FERR(d.ferr).nome + '  +  ' + PECA(d.peca).icone + ' ' + PECA(d.peca).nome + (r.emerg ? '  ·  💸 emergência' : ''), W / 2, y + 94);
+  const bx = x + 40, bw = 480, by = y + 132, bh = 34;
+  const dica = t2 => { ctx.fillStyle = '#8fb8c4'; ctx.font = '700 11px "Courier New", monospace'; ctx.fillText(t2, W / 2, by - 10); };
+
+  if (r.mg === 'torque') {
+    dica('pare o marcador na zona verde — ela encolhe a cada aperto');
+    ctx.fillStyle = 'rgba(0,0,0,.5)'; rr(bx, by, bw, bh, 8); ctx.fill();
+    ctx.fillStyle = 'rgba(95,191,106,.5)'; ctx.fillRect(bx + r.zi * bw, by, (r.zf - r.zi) * bw, bh);
+    ctx.strokeStyle = '#5fbf6a'; ctx.lineWidth = 2; ctx.strokeRect(bx + r.zi * bw, by, (r.zf - r.zi) * bw, bh);
+    const mx = bx + r.marcador * bw;
+    ctx.fillStyle = r.penal > 0 ? '#ff5a4a' : '#ffd94d'; ctx.fillRect(mx - 3, by - 6, 6, bh + 12);
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(mx, by - 8); ctx.lineTo(mx - 5, by - 16); ctx.lineTo(mx + 5, by - 16); ctx.fill();
+  } else if (r.mg === 'tensao') {
+    dica('a esteira balança — TRAVE quando a agulha passar no centro');
+    ctx.fillStyle = 'rgba(0,0,0,.5)'; rr(bx, by, bw, bh, 8); ctx.fill();
+    ctx.strokeStyle = 'rgba(200,160,90,.5)'; ctx.lineWidth = 3;                   // elos da esteira
+    for (let k = 0; k < 16; k++) { const ex = bx + 16 + k * 29;
+      ctx.strokeRect(ex, by + 9, 20, 16); }
+    ctx.fillStyle = 'rgba(95,191,106,.5)';
+    ctx.fillRect(bx + (0.5 - r.z) * bw, by, r.z * 2 * bw, bh);
+    ctx.strokeStyle = '#5fbf6a'; ctx.lineWidth = 2; ctx.strokeRect(bx + (0.5 - r.z) * bw, by, r.z * 2 * bw, bh);
+    const pos = 0.5 + 0.45 * Math.sin(r.fase), mx = bx + pos * bw;
+    ctx.fillStyle = r.penal > 0 ? '#ff5a4a' : '#ffd94d'; ctx.fillRect(mx - 3, by - 6, 6, bh + 12);
+  } else if (r.mg === 'mash') {
+    dica(r.feitos === 0 ? 'GIRE rápido pra soltar o filtro entupido!' : 'agora ROSQUEIE o filtro novo!');
+    ctx.fillStyle = 'rgba(0,0,0,.5)'; rr(bx, by, bw, bh, 8); ctx.fill();
+    const g = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+    g.addColorStop(0, '#8a9a54'); g.addColorStop(1, '#c8e06a');
+    ctx.fillStyle = g; if (r.prog > 0.01) { rr(bx + 2, by + 2, (bw - 4) * r.prog, bh - 4, 6); ctx.fill(); }
+    const a = G.t * 10 % 6.28;                                                    // filtro girando
+    ctx.save(); ctx.translate(bx + bw / 2, by + bh / 2); ctx.rotate(r.prog * 12 + a * r.prog);
+    ctx.strokeStyle = 'rgba(255,255,255,.75)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(0, 0, 11, 0, 4.6); ctx.stroke(); ctx.restore();
+  } else if (r.mg === 'pressao') {
+    dica('BOMBEIE e SOLTE dentro da faixa — passou, estoura!');
+    ctx.fillStyle = 'rgba(0,0,0,.5)'; rr(bx, by, bw, bh, 8); ctx.fill();
+    ctx.fillStyle = 'rgba(95,191,106,.5)'; ctx.fillRect(bx + r.fa * bw, by, (r.fb - r.fa) * bw, bh);
+    ctx.strokeStyle = '#5fbf6a'; ctx.lineWidth = 2; ctx.strokeRect(bx + r.fa * bw, by, (r.fb - r.fa) * bw, bh);
+    const pg = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+    pg.addColorStop(0, '#2e6b7c'); pg.addColorStop(1, '#7fd6e8');
+    ctx.fillStyle = pg; if (r.press > 0.01) { rr(bx + 2, by + 2, (bw - 4) * Math.min(1, r.press), bh - 4, 6); ctx.fill(); }
+    for (let k = 1; k < 10; k++) { ctx.strokeStyle = 'rgba(255,255,255,.15)'; ctx.lineWidth = 1;   // régua
+      ctx.beginPath(); ctx.moveTo(bx + k * bw / 10, by + 4); ctx.lineTo(bx + k * bw / 10, by + bh - 4); ctx.stroke(); }
+    if (r.enchendo) { ctx.fillStyle = '#7fd6e8'; ctx.font = '700 11px "Courier New", monospace';
+      ctx.fillText('💧 enchendo…', bx + bw - 46, by - 10); }
+  } else if (r.mg === 'fios') {
+    dica(r.mostrando ? '👀 memorize a ordem dos fios…' : 'repita a sequência! (1-4 ou toque)');
+    const cores = ['#ff5a4a', '#ffd94d', '#4a9fff', '#5fbf6a'], fw = 86, gap2 = 22;
+    const x0 = W / 2 - (fw * 4 + gap2 * 3) / 2;
+    const acende = r.mostrando ? Math.floor(r.mostraT / 0.55) : -1;
+    for (let i2 = 0; i2 < 4; i2++) {
+      const fx = x0 + i2 * (fw + gap2), on = r.mostrando && r.seq[acende] === i2 && acende < r.seq.length;
+      ctx.save(); if (on) { ctx.shadowColor = cores[i2]; ctx.shadowBlur = 22; }
+      rr(fx, by - 6, fw, bh + 12, 9); ctx.fillStyle = on ? cores[i2] : 'rgba(20,26,32,.9)'; ctx.fill(); ctx.restore();
+      rr(fx, by - 6, fw, bh + 12, 9); ctx.strokeStyle = cores[i2]; ctx.lineWidth = on ? 3 : 2; ctx.stroke();
+      ctx.fillStyle = on ? '#101418' : cores[i2]; ctx.font = '800 17px "Courier New", monospace';
+      ctx.fillText('' + (i2 + 1), fx + fw / 2, by + bh / 2 + 5);
+      if (!r.mostrando) botoesTela.push({ x: fx, y: by - 6, w: fw, h: bh + 12, cb: (k => () => fioMec(k))(i2) });
+    }
+    for (let i2 = 0; i2 < r.seq.length; i2++) { ctx.fillStyle = i2 < r.pos ? '#5fbf6a' : 'rgba(255,255,255,.25)';
+      ctx.beginPath(); ctx.arc(W / 2 - (r.seq.length - 1) * 8 + i2 * 16, by + bh + 20, 4.5, 0, 7); ctx.fill(); }
+  }
+
+  if (r.mg !== 'fios') {                                                          // parafusos/etapas
+    for (let i2 = 0; i2 < r.bolts; i2++) { ctx.fillStyle = i2 < r.feitos ? '#5fbf6a' : '#55603f';
+      ctx.beginPath(); ctx.arc(bx + 20 + i2 * 26, by + bh + 22, 7, 0, 7); ctx.fill();
+      ctx.fillStyle = i2 < r.feitos ? '#0e1508' : '#8a9a7a'; ctx.font = '700 10px "Courier New", monospace';
+      ctx.fillText(i2 < r.feitos ? '✔' : '✚', bx + 20 + i2 * 26, by + bh + 26); }
+    ctx.fillStyle = '#cfe0b8'; ctx.font = '700 13px "Courier New", monospace';
+    ctx.fillText(r.feitos + ' / ' + r.bolts + ' etapas', W / 2, by + bh + 52);
+  } else { ctx.fillStyle = '#cfe0b8'; ctx.font = '700 13px "Courier New", monospace';
+    ctx.fillText('circuito ' + (r.feitos + 1) + ' / ' + r.bolts, W / 2, by + bh + 52); }
+
+  if (r.mg !== 'fios') {                                                          // botão principal
+    const tb = MOBILE ? 62 : 44, tw = 270, tx = W / 2 - tw / 2, ty = y + 310 - tb - 14;
+    const rot = r.penal > 0 ? '✋ escapou!' :
+      r.mg === 'torque' ? '🔧 APERTAR' : r.mg === 'tensao' ? '⛓️ TRAVAR' :
+      r.mg === 'mash' ? '🔽 GIRAR!' : (r.enchendo ? '✋ SOLTAR AGORA' : '💧 BOMBEAR');
+    ctx.fillStyle = r.penal > 0 ? 'rgba(90,50,40,.8)' : (r.mg === 'pressao' && r.enchendo ? '#7fd6e8' : '#f0c814');
+    rr(tx, ty, tw, tb, 10); ctx.fill();
+    ctx.fillStyle = r.penal > 0 ? '#ffb0a0' : '#0e1508'; ctx.font = '800 ' + (MOBILE ? 19 : 15) + 'px "Courier New", monospace';
+    ctx.fillText(rot + (MOBILE ? '' : ' (ESPAÇO)'), W / 2, ty + tb / 2 + 6);
+    botoesTela.push({ x: tx, y: ty, w: tw, h: tb, cb: torqueMec });
+  }
   ctx.textAlign = 'left';
 }
 
+function abastecerMec() {
+  const m = G.mec, custo = Math.ceil((CFG.MEC_TANQUE - m.diesel) * CFG.MEC_DIESEL_PRECO);
+  if (custo <= 0) { toast('⛽ Tanque já está cheio'); return; }
+  if (m.grana < custo) { toast('💰 Sem grana pro diesel (R$' + custo + ')'); SFX.multa(); return; }
+  m.grana -= custo; m.custoDiesel += custo; m.diesel = CFG.MEC_TANQUE;
+  flut(jog.x, jog.y - 40, '⛽ tanque cheio', '#8fd6e8'); SFX.diesel();
+}
+function desenharMecDronePainel() {
+  const m = G.mec;
+  ctx.fillStyle = 'rgba(6,10,14,.7)'; ctx.fillRect(0, 0, W, H);
+  const { x, y } = painel(430, 360);
+  ctx.textAlign = 'center'; ctx.fillStyle = '#8fd6e8'; ctx.font = '800 22px "Segoe UI", sans-serif';
+  ctx.fillText('🚁 ENTREGA POR DRONE', W / 2, y + 38);
+  ctx.fillStyle = '#9fb8c4'; ctx.font = '700 11px "Courier New", monospace';
+  ctx.fillText('a peça voa da usina até você · taxa 1.4×', W / 2, y + 58);
+  MEC_PECAS.forEach((p, i) => {
+    const Y = y + 74 + i * 40, pc = Math.round(p.preco * m.pecaMul * CFG.MEC_DRONE_TAXA), qt = m.pecas[p.id] || 0;
+    ctx.font = '18px "Segoe UI", sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText(p.icone, x + 40, Y + 20);
+    ctx.textAlign = 'left'; ctx.fillStyle = '#eef2e0'; ctx.font = '700 12px "Courier New", monospace';
+    ctx.fillText((i + 1) + '. ' + p.nome, x + 62, Y + 18);
+    ctx.fillStyle = '#ffd94d'; ctx.textAlign = 'right'; ctx.fillText('x' + qt, x + 290, Y + 18);
+    const bx = x + 306, bw = 92; rr(bx, Y, bw, 30, 7);
+    ctx.fillStyle = m.grana >= pc ? '#2e6b9c' : 'rgba(60,60,60,.5)'; ctx.fill();
+    ctx.fillStyle = m.grana >= pc ? '#dff0fa' : '#7a7a7a'; ctx.font = '700 12px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('R$' + pc, bx + bw / 2, Y + 20);
+    botoesTela.push({ x: bx, y: Y, w: bw, h: 30, cb: () => pedirDrone(p.id) });
+    ctx.textAlign = 'center';
+  });
+  // diesel preventivo
+  { const Y = y + 74 + 5 * 40 + 6;
+    ctx.font = '18px "Segoe UI", sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText('🛢️', x + 40, Y + 20);
+    ctx.textAlign = 'left'; ctx.fillStyle = '#8fd6e8'; ctx.font = '700 12px "Courier New", monospace';
+    ctx.fillText('Diesel +55L (drone-tanque)', x + 62, Y + 18);
+    const bx = x + 306, bw = 92; rr(bx, Y, bw, 30, 7);
+    ctx.fillStyle = (!m.resgate && m.grana >= CFG.MEC_RESGATE) ? '#2e6b9c' : 'rgba(60,60,60,.5)'; ctx.fill();
+    ctx.fillStyle = '#dff0fa'; ctx.font = '700 12px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText(m.resgate ? 'a caminho' : 'R$' + CFG.MEC_RESGATE, bx + bw / 2, Y + 20);
+    if (!m.resgate) botoesTela.push({ x: bx, y: Y, w: bw, h: 30, cb: () => pedirDrone('diesel') }); }
+  const bw2 = 160, bx2 = W / 2 - bw2 / 2, by2 = y + 360 - 40;
+  rr(bx2, by2, bw2, 30, 8); ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.fill();
+  ctx.strokeStyle = '#8fd6e8'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = '#dff0fa'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('FECHAR (Q)', W / 2, by2 + 20);
+  botoesTela.push({ x: bx2, y: by2, w: bw2, h: 30, cb: () => { m.dronePainel = false; } });
+  ctx.textAlign = 'left';
+}
 function desenharMecDepot() {
   const m = G.mec;
   ctx.fillStyle = 'rgba(6,10,14,.72)'; ctx.fillRect(0, 0, W, H);
@@ -3369,6 +3737,13 @@ function desenharMecDepot() {
     ctx.fillStyle = on ? '#9fe36a' : '#cfe0e8'; ctx.font = '700 10px "Courier New", monospace'; ctx.textAlign = 'left';
     ctx.fillText(f.nome.slice(0, 12), x + 474, Y + 20); ctx.textAlign = 'left';
     botoesTela.push({ x: x + 440, y: Y, w: 130, h: 32, cb: () => toggleFerr(f.id) }); });
+  { const custo = Math.ceil((CFG.MEC_TANQUE - m.diesel) * CFG.MEC_DIESEL_PRECO), Y = y + 100 + 4 * 40 + 8;
+    rr(x + 440, Y, 130, 34, 7); ctx.fillStyle = custo > 0 && m.grana >= custo ? '#7a5a1e' : 'rgba(50,50,50,.5)'; ctx.fill();
+    ctx.strokeStyle = '#f0c814'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#ffe9a0'; ctx.font = '700 11px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('⛽ ' + Math.round(m.diesel) + 'L → cheio', x + 505, Y + 14);
+    ctx.fillText(custo > 0 ? 'R$' + custo : 'cheio', x + 505, Y + 27);
+    botoesTela.push({ x: x + 440, y: Y, w: 130, h: 34, cb: abastecerMec }); ctx.textAlign = 'left'; }
   const bw = 200, bx = W / 2 - bw / 2, by2 = y + 380 - 44;
   rr(bx, by2, bw, 32, 8); ctx.fillStyle = '#7cc85a'; ctx.fill();
   ctx.fillStyle = '#0e1508'; ctx.font = '800 14px "Courier New", monospace'; ctx.textAlign = 'center';
@@ -3392,7 +3767,8 @@ function desenharMecFim() {
   // stats: ganhos e perdas
   const linhas = [
     ['🏭 Produção das máquinas', '+R$' + Math.floor(m.producao), '#7fd47f'],
-    ['🧰 Gasto com peças', '-R$' + Math.floor(m.custoPecas), '#ff9a5e'],
+    ['🧰 Gasto com peças e drones', '-R$' + Math.floor(m.custoPecas), '#ff9a5e'],
+    ['⛽ Diesel e resgates', '-R$' + Math.floor(m.custoDiesel), '#ffb87a'],
     ['⏱️ Perdido em paradas', '-R$' + Math.floor(m.perdaParada), '#ff7a5e'],
     ['🔧 Manutenções feitas', '' + m.manutencoes, '#8fd6e8'],
     ['⚠️ Quebras no turno', '' + m.quebrasTot, '#cfe0b8'],
@@ -3421,6 +3797,7 @@ function renderMecanico() {
   if (m.tela === 'kit') return desenharMecKit();
   renderMecCampo();
   desenharMecHUD();
+  if (m.dronePainel && !m.reparo && !m.depot && !m.fim) desenharMecDronePainel();
   if (m.depot) desenharMecDepot();
   if (m.reparo) desenharMecReparo();
   if (m.fim) desenharMecFim();
@@ -4916,18 +5293,19 @@ const AJUDA_PAGS = [
     'tempo fica salvo. Pause com P (ou o botão no canto).',
   ]},
   { t: '🔧 MECÂNICO DE CAMPO (novo modo)', l: [
-    'Você é o mecânico que mantém a safra viva!',
-    '1) Escolha 1 dos 8 mecânicos — cada um tem um TALENTO próprio',
-    '   (reparo mais rápido, peças mais baratas, +1 espaço no kit…).',
-    '2) Monte o KIT: ferramentas (espaços limitados) + estoque de',
-    '   peças comprado com seu orçamento inicial.',
-    '3) No campo (06:00→22:00), dirija a van até as máquinas em',
-    '   pane. Cada defeito pede FERRAMENTA + PEÇA certas:',
-    '   🌡️ motor · ⛓️ rodante · 🔽 filtro · 💧 hidráulico · ⚡ elétrico',
-    '4) Reparo = torque: aperte com o marcador na zona verde.',
-    'Máquina rodando gera R$/h; parada, você PERDE essa produção.',
-    'Sem peça? Emergência custa 1.8× — ou reabasteça no 🏭 DEPÓSITO.',
-    'Placar = caixa final (produção − peças). Ranking fica salvo.',
+    'Dirija o CAMINHÃO-OFICINA e mantenha a safra viva (06:00→22:00)!',
+    'Escolha 1 dos 8 mecânicos (cada um tem um TALENTO) e monte o',
+    'kit: ferramentas de espaço limitado + estoque de peças.',
+    'Cada defeito tem ferramenta, peça e MINI-GAME próprios:',
+    '🌡️ motor=torque na zona · ⛓️ esteira=trave a agulha no centro',
+    '🔽 filtro=gire rápido (toques) · 💧 hidráulico=bombeie e solte',
+    'na faixa · ⚡ elétrico=memorize e repita a sequência de fios.',
+    '⛽ O caminhão gasta DIESEL ao rodar: abasteça no depósito ou',
+    'peça o drone-tanque na pane seca (caro!).',
+    '🚁 Tecla Q / botão: peça PEÇAS POR DRONE (taxa 1.4×) — elas',
+    'voam da usina até você. No depósito o preço é normal.',
+    'Máquina rodando gera R$/h; parada, você PERDE a produção.',
+    'Placar = caixa final. À noite, acenda o caminho com os faróis!',
   ]},
   { t: '🏁 CAMPANHA & RANKING', l: [
     'A safra é a CAMPANHA que você escolheu (1 a 5 dias). Bata a',
@@ -5177,8 +5555,18 @@ window.addEventListener('keydown', e => {
     if (m.tela !== 'campo') return;              // seleção/kit por clique
     if (m.fim) { if ((e.code === 'Space' || e.code === 'Enter') && m.fimT > 0.5) iniciarMecanico();
                  else if (e.code === 'Escape') G.fase = 'menu'; return; }
-    if (m.reparo) { if (e.code === 'Space' || e.code === 'Enter') torqueMec(); return; }
+    if (m.reparo) {
+      if (m.reparo.mg === 'fios') { const fi2 = ['Digit1','Digit2','Digit3','Digit4'].indexOf(e.code);
+        if (fi2 >= 0) { fioMec(fi2); return; } }
+      if (e.code === 'Space' || e.code === 'Enter') torqueMec(); return; }
     if (m.depot) { if (e.code === 'Escape' || e.code === 'Space' || e.code === 'Enter') m.depot = false; return; }
+    if (m.dronePainel) {
+      const di = ['Digit1','Digit2','Digit3','Digit4','Digit5'].indexOf(e.code);
+      if (di >= 0) { pedirDrone(MEC_PECAS[di].id); return; }
+      if (e.code === 'KeyQ' || e.code === 'Escape') { m.dronePainel = false; return; }
+      return;
+    }
+    if (e.code === 'KeyQ') { m.dronePainel = true; return; }
     if (e.code === 'Space' || e.code === 'Enter') { acaoMec(); return; }
     if (e.code === 'Escape') { G.fase = 'menu'; return; }
     // WASD/setas caem para o switch (movimento)
@@ -5345,7 +5733,7 @@ requestAnimationFrame(loop);
 /* gancho de depuração/testes: __T no console (F12) */
 globalThis.__T = {
   CFG, G, jog, nivel, canas, pedras, capis, fogos, lamas, plantios, cortadas, cinzas,
-  pecas, rastros, passaros, ARVORES, LAGOAS, pragas, defensivos, __grade: grade, botoesTela,
+  pecas, rastros, passaros, ARVORES, LAGOAS, pragas, defensivos, __grade: grade, botoesTela, kb,
   api: { iniciarJogo, vender, venderDrone, abastecer, consertar, bombeiro, plantar,
          irPlantio, encerrarPlantio, caiRaio, acender, fim, sortearDia, novaCana,
          comprarUpg, update, uv, localPt, render,
@@ -5360,6 +5748,7 @@ globalThis.__T = {
          entrarDesafio, compartilharCodigo, gerarMundo, plantarCampoInicial,
          iniciarMecanico, escolherMec, irCampoMec, acaoMec, torqueMec, quebrarMaquina,
          atualizarMecanico, fimMecanico, iniciarReparoMec, comprarPecaKit, toggleFerr,
+         fioMec, pedirDrone, abastecerMec, atualizarDronesMec,
          MEC_DEFEITOS, MEC_PECAS, MEC_FERRAMENTAS, MEC_TALENTOS,
          iniciarSurvivor, atualizarSurvivor, criarInimigo, criarBoss, ganharXP,
          abrirEscolha, escolherMelhoria, fimSurvivor, spawnInimigo,
