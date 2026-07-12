@@ -212,6 +212,7 @@ const CFG = {
   ZOOM_MOBILE: 1.5,                  // câmera dá zoom no celular (tudo maior)
   SURV_HP: 100, SURV_VEL: 178, SURV_IFRAME: 0.7, SURV_MAG: 74, SURV_MAXMOB: 190,
   SURV_CRIT: 0.16, SURV_CRIT_MULT: 2.2,
+  MEC_GRANA_INI: 1500, MEC_EMERG_MULT: 1.8, MEC_VEL: 190, CHAVE_MEC: 'canaTycoon_mecRank',
   CHAVE_SURV: 'canaTycoon_survRec',
   CHAVE_DIAS: 'canaTycoon_dias',
   PLANTIO_MIN_POR_SEG: 8,            // plantio: 24h de jogo em 3 min reais
@@ -1381,6 +1382,7 @@ function update(dt) {
     if (rastros[i].t > 7) rastros.splice(i, 1);
   }
 
+  if (G.fase === 'mecanico') { atualizarMecanico(dt); motorSom(jog.movendo ? 0.4 : 0, jog.movendo); chuvaSom(false); return; }
   if (G.fase === 'survivor') { atualizarSurvivor(dt); motorSom(jog.movendo ? 0.5 : 0, jog.movendo); chuvaSom(false); return; }
   if (G.fase === 'fim') { G.fimT += dt; motorSom(0, false); chuvaSom(false); return; }
   if (G.fase === 'reforma') { atualizarReforma(dt); motorSom(0, false); chuvaSom(false); return; }
@@ -2838,9 +2840,596 @@ function renderSurvivor() {
     ctx.fillText('P para continuar', W / 2, H / 2 + 28); ctx.textAlign = 'left'; }
 }
 
+/* ═══════════════════════════════ MODO MECÂNICO DE CAMPO ═══════════
+   Você é um mecânico mantendo a safra viva: dirija até as máquinas
+   quebradas, use a ferramenta+peça certas e conserte no ponto de torque.
+   Máquina rodando produz R$/h; parada, você perde. Termine no lucro. */
+
+const MEC_TALENTOS = [
+  { id: 'aprendiz',   nome: 'Aprendiz',        icone: '🔧', desc: 'começo humilde, sem bônus' },
+  { id: 'frio',       nome: 'Sangue Frio',     icone: '❄️', desc: 'erros no torque não punem' },
+  { id: 'galho',      nome: 'Quebra-Galho',    icone: '🪛', desc: '15% de chance de não gastar peça' },
+  { id: 'graxa',      nome: 'Íntimo da Graxa',  icone: '🛢️', desc: '+20% de velocidade no reparo' },
+  { id: 'prata',      nome: 'Mão de Prata',    icone: '🥈', desc: 'peças 25% mais baratas' },
+  { id: 'fucador',    nome: 'Fuçador',         icone: '🐷', desc: '+1 espaço no kit de ferramentas' },
+  { id: 'impecavel',  nome: 'Impecável',       icone: '📘', desc: 'vê o defeito das máquinas de longe' },
+  { id: 'tecnico',    nome: 'O Técnico',       icone: '🎓', desc: '+35% de velocidade e vê tudo' },
+];
+const MEC_FERRAMENTAS = [
+  { id: 'chave',      nome: 'Chave de Torque',  icone: '🔧' },
+  { id: 'alavanca',   nome: 'Alavanca',         icone: '🪛' },
+  { id: 'chave_h',    nome: 'Chave Hidráulica', icone: '🔩' },
+  { id: 'multimetro', nome: 'Multímetro',       icone: '📟' },
+];
+const MEC_PECAS = [
+  { id: 'junta',     nome: 'Junta do Motor', icone: '⚙️', preco: 120 },
+  { id: 'elo',       nome: 'Elo da Esteira', icone: '🔗', preco: 160 },
+  { id: 'filtro',    nome: 'Filtro',         icone: '🧽', preco: 70 },
+  { id: 'mangueira', nome: 'Mangueira',      icone: '🩹', preco: 100 },
+  { id: 'fusivel',   nome: 'Fusível',        icone: '🔌', preco: 40 },
+];
+const MEC_DEFEITOS = [
+  { id: 'motor',      nome: 'Superaquecimento',   icone: '🌡️', cor: '#e0402e', ferr: 'chave',      peca: 'junta',     bolts: 4, vel: 0.95, zona: 0.26 },
+  { id: 'rodante',    nome: 'Esteira solta',      icone: '⛓️', cor: '#c88a2e', ferr: 'alavanca',   peca: 'elo',       bolts: 3, vel: 0.82, zona: 0.26 },
+  { id: 'filtro',     nome: 'Perda de potência',  icone: '🔽', cor: '#8a9a54', ferr: 'chave',      peca: 'filtro',    bolts: 2, vel: 1.25, zona: 0.34 },
+  { id: 'hidraulico', nome: 'Vazamento hidráulico', icone: '💧', cor: '#2e6b7c', ferr: 'chave_h',  peca: 'mangueira', bolts: 3, vel: 1.0,  zona: 0.27 },
+  { id: 'eletrico',   nome: 'Falha elétrica',     icone: '⚡', cor: '#f0c814', ferr: 'multimetro', peca: 'fusivel',   bolts: 3, vel: 1.15, zona: 0.24, diag: true },
+];
+const MEC_POS = [
+  { x: 430, y: 430, nome: 'CH-570 #1', vh: 260 }, { x: 1130, y: 360, nome: 'CH-670 #2', vh: 420 },
+  { x: 1880, y: 560, nome: 'Trator T-8', vh: 180 }, { x: 620, y: 1120, nome: 'CH-570 #3', vh: 260 },
+  { x: 1320, y: 1280, nome: 'Trator T-9', vh: 200 }, { x: 2000, y: 1240, nome: 'CH-670 #4', vh: 420 },
+];
+const FERR = id => MEC_FERRAMENTAS.find(f => f.id === id);
+const PECA = id => MEC_PECAS.find(p => p.id === id);
+const DEF = id => MEC_DEFEITOS.find(d => d.id === id);
+
+function iniciarMecanico() {
+  if (typeof document !== 'undefined') { const cb = document.getElementById('codigoBox'); if (cb) cb.style.display = 'none'; }
+  const inp = document.getElementById('nome');
+  if (inp) { G.nomeJogador = ((inp.value || '').trim().toUpperCase().slice(0, 12)) || 'OPERADOR';
+             try { localStorage.setItem(CFG.CHAVE_NOME, G.nomeJogador); } catch (e) {} }
+  G.duelo = null; _semRng = null; G.fase = 'mecanico'; joySurv = null;
+  let rec = 0; try { rec = Number(localStorage.getItem(CFG.CHAVE_MEC)) || 0; } catch (e) {}
+  G.mec = { tela: 'selecao', mecIdx: null, talento: null, slots: 3, kit: ['chave', 'multimetro'],
+    pecas: {}, grana: CFG.MEC_GRANA_INI, maquinas: [], reparo: null, depot: false, hover: null,
+    producao: 0, custoPecas: 0, perdaParada: 0, manutencoes: 0, quebrasTot: 0,
+    proxQuebra: 6, t: 0, fim: false, fimT: 0, recorde: rec, novoRec: false };
+  G.pausa = false;
+}
+function escolherMec(i) {
+  const m = G.mec; m.mecIdx = i; m.talento = MEC_TALENTOS[i];
+  m.slots = 3 + (m.talento.id === 'fucador' ? 1 : 0);
+  m.velMul = m.talento.id === 'graxa' ? 1.2 : m.talento.id === 'tecnico' ? 1.35 : 1;
+  m.pecaMul = m.talento.id === 'prata' ? 0.75 : 1;
+  m.veLonge = (m.talento.id === 'impecavel' || m.talento.id === 'tecnico');
+  m.semFalha = (m.talento.id === 'frio');
+  m.economiza = (m.talento.id === 'galho');
+  m.kit = ['chave', 'multimetro'].slice(0, m.slots);
+  // estoque inicial conforme estrelas
+  const est = CFG.MECANICOS[i][1];
+  m.pecas = { junta: 1, elo: 1, filtro: 1 + est, mangueira: 1, fusivel: 1 + est };
+  m.tela = 'kit'; SFX.moeda();
+}
+function toggleFerr(id) {
+  const m = G.mec, k = m.kit, ix = k.indexOf(id);
+  if (ix >= 0) { if (id !== 'chave') k.splice(ix, 1); }        // chave é essencial
+  else if (k.length < m.slots) k.push(id);
+  else toast('🧰 Kit cheio (' + m.slots + ' espaços)');
+}
+function comprarPecaKit(id) {
+  const m = G.mec, pc = Math.round(PECA(id).preco * m.pecaMul);
+  if (m.grana < pc) { toast('💰 Sem grana pra ' + PECA(id).nome); SFX.multa(); return; }
+  m.grana -= pc; m.custoPecas += pc; m.pecas[id] = (m.pecas[id] || 0) + 1; SFX.peca();
+}
+function irCampoMec() {
+  const m = G.mec;
+  m.maquinas = MEC_POS.map((p, i) => ({ id: i, x: p.x, y: p.y, nome: p.nome, vh: p.vh,
+    estado: 'ok', defeito: null, alertaT: 0, frame: 0 }));
+  jog.x = MW / 2; jog.y = MH / 2; jog.ang = 0; jog.movendo = false; jog.turbo = 0;
+  G.hora = CFG.HORA_INI; m.tela = 'campo'; m.t = 0; m.proxQuebra = 5;
+  toast('🔧 Turno começou! Mantenha as máquinas rodando até as 22:00.', 4);
+  SFX.dia();
+}
+function moverMec(dt) {
+  const m = G.mec;
+  if (m.reparo || m.depot || m.fim) { jog.movendo = false; return; }
+  let dx = (kb.dir ? 1 : 0) - (kb.esq ? 1 : 0), dy = (kb.re ? 1 : 0) - (kb.fwd ? 1 : 0);
+  if (joySurv && joySurv.ativo) { dx = joySurv.dx; dy = joySurv.dy; }
+  const mag = Math.hypot(dx, dy), vel = CFG.MEC_VEL;
+  if (mag > 0.15) {
+    const mm = mag < 1 ? 1 : mag;
+    jog.x = clamp(jog.x + (dx / mm) * vel * dt, 40, MW - 40);
+    jog.y = clamp(jog.y + (dy / mm) * vel * dt, 40, MH - 40);
+    jog.ang = Math.atan2(dy, dx); jog.movendo = true; jog.frame += dt * 9;
+    if (Math.random() < dt * 6) rastros.push({ x: jog.x, y: jog.y, ang: jog.ang, t: 0 });
+  } else jog.movendo = false;
+}
+function quebrarMaquina() {
+  const m = G.mec, ok = m.maquinas.filter(q => q.estado === 'ok');
+  if (!ok.length) return;
+  const q = escolha(ok), d = escolha(MEC_DEFEITOS);
+  q.estado = 'quebrada'; q.defeito = d.id; q.alertaT = 0; m.quebrasTot++;
+  SFX.alarme();
+}
+function acharAlvoMec() {                                       // máquina/depósito ao alcance
+  const m = G.mec;
+  let alvo = null, md = 95 * 95;
+  for (const q of m.maquinas) if (q.estado === 'quebrada') {
+    const d = dist2(jog.x, jog.y, q.x, q.y); if (d < md) { md = d; alvo = q; }
+  }
+  if (alvo) return { tipo: 'maquina', maq: alvo };
+  if (jog.x > USINA.zona.x - 30 && jog.x < USINA.zona.x + USINA.zona.w + 30 &&
+      jog.y > USINA.zona.y - 30 && jog.y < USINA.zona.y + USINA.zona.h + 30) return { tipo: 'depot' };
+  return null;
+}
+function acaoMec() {                                            // botão/ESPAÇO no campo
+  const m = G.mec; if (m.reparo || m.fim) return;
+  if (m.depot) { m.depot = false; return; }
+  const alvo = m.hover;
+  if (!alvo) return;
+  if (alvo.tipo === 'depot') { m.depot = true; SFX.moeda(); return; }
+  iniciarReparoMec(alvo.maq);
+}
+function novaZonaMec(r) {
+  const larg = r.zona;
+  r.zi = rand(0.08, 0.92 - larg); r.zf = r.zi + larg;
+  r.dir = Math.random() < 0.5 ? 1 : -1; r.marcador = r.dir > 0 ? 0 : 1;
+}
+function iniciarReparoMec(q) {
+  const m = G.mec, d = DEF(q.defeito);
+  if (!m.kit.includes(d.ferr)) { toast('🧰 Falta ' + FERR(d.ferr).nome + ' no kit — vá ao depósito'); SFX.multa(); return; }
+  let emerg = false;
+  if (!(m.pecas[d.peca] > 0)) {
+    const pe = Math.round(PECA(d.peca).preco * m.pecaMul * CFG.MEC_EMERG_MULT);
+    if (m.grana >= pe) { emerg = true; toast('💸 Sem ' + PECA(d.peca).nome + ' — compra de emergência (R$' + pe + ')', 3); }
+    else { toast('📦 Sem ' + PECA(d.peca).nome + ' e sem grana — reabasteça no depósito', 3); SFX.multa(); return; }
+  }
+  q.estado = 'reparando';
+  const r = { maq: q, def: d, bolts: d.bolts + (d.diag ? 1 : 0), feitos: 0,
+    vel: d.vel / (m.velMul || 1) * (d.diag ? 1 : 1), zona: d.zona, penal: 0, emerg };
+  novaZonaMec(r); m.reparo = r; SFX.reparo();
+}
+function torqueMec() {
+  const r = G.mec.reparo, m = G.mec; if (!r || r.penal > 0) return;
+  if (r.marcador >= r.zi && r.marcador <= r.zf) {           // acertou o ponto
+    r.feitos++; SFX.reparo();
+    flut(jog.x, jog.y - 40, '✔', '#8fe36a');
+    part(jog.x, jog.y - 20, { vx: [-50, 50], vy: [-70, -10], vida: [.2, .5], tam: [2, 3],
+      cores: ['#ffd94d', '#fff'], grav: 160, n: 4 });
+    if (r.feitos >= r.bolts) return finalizarReparoMec();
+    r.zona = Math.max(0.16, r.zona * 0.92); novaZonaMec(r);
+  } else {                                                    // errou
+    if (!m.semFalha) { r.penal = 0.4; SFX.multa(); tremer(0.08); }
+  }
+}
+function finalizarReparoMec() {
+  const m = G.mec, r = m.reparo, q = r.maq, d = r.def;
+  if (r.emerg) { const pe = Math.round(PECA(d.peca).preco * m.pecaMul * CFG.MEC_EMERG_MULT);
+    m.grana -= pe; m.custoPecas += pe; }
+  else if (!(m.economiza && Math.random() < 0.15)) { m.pecas[d.peca] = Math.max(0, (m.pecas[d.peca] || 0) - 1); }
+  q.estado = 'ok'; q.defeito = null; m.reparo = null; m.manutencoes++;
+  flut(q.x, q.y - 50, '✅ CONSERTADA', '#8fe36a'); SFX.recorde();
+  part(q.x, q.y, { vx: [-90, 90], vy: [-120, 20], vida: [.3, .7], tam: [2, 4],
+    cores: ['#8fe36a', '#ffd94d', '#fff'], grav: 200, n: 16 });
+}
+function fimMecanico() {
+  const m = G.mec; if (m.fim) return;
+  m.fim = true; m.fimT = 0; jog.movendo = false; SFX.fim();
+  const liq = Math.floor(m.grana);
+  if (liq > m.recorde) { m.recorde = liq; m.novoRec = true;
+    try { localStorage.setItem(CFG.CHAVE_MEC, liq); } catch (e) {} }
+  const ent = { n: G.nomeJogador || 'OPERADOR', g: liq, mn: m.manutencoes, t: Date.now() };
+  let lista = []; try { lista = JSON.parse(localStorage.getItem(CFG.CHAVE_MEC + '_lista') || '[]'); } catch (e) {}
+  lista.push(ent); lista.sort((a, b) => b.g - a.g); lista = lista.slice(0, 8);
+  try { localStorage.setItem(CFG.CHAVE_MEC + '_lista', JSON.stringify(lista)); } catch (e) {}
+  m._rank = lista; m._rankT = ent.t;
+}
+function relogioMec(dt) {
+  const m = G.mec;
+  G.hora += dt * CFG.MIN_POR_SEG;
+  const dh = dt * CFG.MIN_POR_SEG / 60;                       // horas de jogo passadas
+  for (const q of m.maquinas) {
+    if (q.estado === 'ok') { m.grana += q.vh * dh; m.producao += q.vh * dh; }
+    else { m.perdaParada += q.vh * dh; q.alertaT += dt; }
+  }
+  if (!m.aviso21 && G.hora >= 21 * 60) { m.aviso21 = true; toast('⏰ 21:00 — última hora do turno!', 3); SFX.alarme(); }
+  if (G.hora >= CFG.HORA_FIM) { G.hora = CFG.HORA_FIM; fimMecanico(); }
+}
+function atualizarMecanico(dt) {
+  const m = G.mec; if (!m) return;
+  if (m.tela !== 'campo') return;                            // seleção/kit são estáticas
+  if (m.fim) { m.fimT += dt; return; }
+  m.t += dt;
+  if (!m.reparo && !m.depot) {
+    m.proxQuebra -= dt;
+    if (m.proxQuebra <= 0) { quebrarMaquina();
+      m.proxQuebra = Math.max(6, rand(11, 19) - m.t * 0.02); }
+  }
+  for (const q of m.maquinas) if (q.estado !== 'ok') q.frame += dt;
+  const r = m.reparo;
+  if (r) { if (r.penal > 0) r.penal -= dt;
+    else { r.marcador += r.dir * r.vel * dt;
+      if (r.marcador > 1) { r.marcador = 1; r.dir = -1; } if (r.marcador < 0) { r.marcador = 0; r.dir = 1; } } }
+  if (!m.reparo && !m.depot) moverMec(dt);
+  m.hover = (m.reparo || m.depot || m.fim) ? null : acharAlvoMec();
+  relogioMec(dt);
+}
+
+function rr(x, y, w, h, r) {
+  ctx.beginPath(); ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function mecFundo() {                                            // fundo comum das telas de menu do modo
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#243447'); g.addColorStop(1, '#0e1620');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,255,255,.03)'; ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 30) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+}
+
+function desenharMecSelecao() {
+  mecFundo();
+  ctx.textAlign = 'center'; ctx.fillStyle = '#ffd94d';
+  ctx.font = '800 32px "Segoe UI", sans-serif'; ctx.fillText('🔧 ESCOLHA SEU MECÂNICO', W / 2, 54);
+  ctx.fillStyle = '#9fb8c4'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('cada um tem um talento que muda a estratégia', W / 2, 76);
+  const cols = 4, cw = 218, gap = 14, ch = 168, x0 = W / 2 - (cw * cols + gap * (cols - 1)) / 2;
+  for (let i = 0; i < MEC_TALENTOS.length; i++) {
+    const col = i % cols, row = (i / cols) | 0, X = x0 + col * (cw + gap), Y = 100 + row * (ch + 16);
+    const tal = MEC_TALENTOS[i], estr = CFG.MECANICOS[i][1];
+    rr(X, Y, cw, ch, 12); ctx.fillStyle = 'rgba(14,22,30,.9)'; ctx.fill();
+    rr(X + 1, Y + 1, cw - 2, ch - 2, 11); ctx.strokeStyle = '#3d5a6a'; ctx.lineWidth = 2; ctx.stroke();
+    if (AVA[i]) { ctx.drawImage(AVA[i], X + cw / 2 - 30, Y + 12, 60, 60);
+      ctx.strokeStyle = '#2a3a46'; ctx.lineWidth = 1; ctx.strokeRect(X + cw / 2 - 30, Y + 12, 60, 60); }
+    ctx.fillStyle = '#eef2e0'; ctx.font = '800 15px "Courier New", monospace';
+    ctx.fillText(CFG.MECANICOS[i][0], X + cw / 2, Y + 90);
+    ctx.fillStyle = '#f0c814'; ctx.font = '12px "Courier New", monospace';
+    ctx.fillText('★'.repeat(estr) + '☆'.repeat(5 - estr), X + cw / 2, Y + 108);
+    ctx.fillStyle = '#8fd6e8'; ctx.font = '700 12px "Courier New", monospace';
+    ctx.fillText(tal.icone + ' ' + tal.nome, X + cw / 2, Y + 128);
+    ctx.fillStyle = '#9fb8a8'; ctx.font = '10px "Courier New", monospace';
+    ctx.fillText(tal.desc.length > 30 ? tal.desc.slice(0, 29) + '…' : tal.desc, X + cw / 2, Y + 146);
+    botoesTela.push({ x: X, y: Y, w: cw, h: ch, cb: () => escolherMec(i) });
+  }
+  ctx.textAlign = 'right'; ctx.font = '700 12px "Courier New", monospace';
+  const bw = 130; ctx.fillStyle = 'rgba(20,28,34,.8)'; rr(W - bw - 16, H - 40, bw, 28, 7); ctx.fill();
+  ctx.strokeStyle = 'rgba(200,215,225,.4)'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = '#cfe0e8'; ctx.textAlign = 'center'; ctx.fillText('← VOLTAR AO MENU', W - bw / 2 - 16, H - 22);
+  botoesTela.push({ x: W - bw - 16, y: H - 40, w: bw, h: 28, cb: () => { G.fase = 'menu'; } });
+  ctx.textAlign = 'left';
+}
+
+function desenharMecKit() {
+  mecFundo();
+  const m = G.mec, tal = m.talento;
+  ctx.textAlign = 'center'; ctx.fillStyle = '#ffd94d';
+  ctx.font = '800 28px "Segoe UI", sans-serif'; ctx.fillText('🧰 MONTE SEU KIT', W / 2, 46);
+  // mecânico escolhido
+  if (AVA[m.mecIdx]) ctx.drawImage(AVA[m.mecIdx], 40, 66, 54, 54);
+  ctx.textAlign = 'left'; ctx.fillStyle = '#eef2e0'; ctx.font = '800 16px "Courier New", monospace';
+  ctx.fillText(CFG.MECANICOS[m.mecIdx][0], 104, 84);
+  ctx.fillStyle = '#8fd6e8'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText(tal.icone + ' ' + tal.nome + ' — ' + tal.desc, 104, 104);
+  // grana
+  ctx.textAlign = 'right'; ctx.fillStyle = '#ffd94d'; ctx.font = '800 22px "Courier New", monospace';
+  ctx.fillText('R$ ' + Math.floor(m.grana), W - 30, 92);
+  ctx.fillStyle = '#9fb8a8'; ctx.font = '10px "Courier New", monospace'; ctx.fillText('orçamento de peças', W - 30, 108);
+
+  // FERRAMENTAS (esquerda)
+  ctx.textAlign = 'left'; ctx.fillStyle = '#cfe0e8'; ctx.font = '700 14px "Courier New", monospace';
+  ctx.fillText('FERRAMENTAS  (' + m.kit.length + '/' + m.slots + ')', 40, 150);
+  MEC_FERRAMENTAS.forEach((f, i) => {
+    const Y = 166 + i * 54, on = m.kit.includes(f.id);
+    rr(40, Y, 400, 46, 9); ctx.fillStyle = on ? 'rgba(60,120,80,.35)' : 'rgba(14,22,30,.8)'; ctx.fill();
+    rr(40, Y, 400, 46, 9); ctx.strokeStyle = on ? '#5fbf6a' : '#3d5a6a'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.font = '24px "Segoe UI", sans-serif'; ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+    ctx.fillText(f.icone, 72, Y + 31);
+    ctx.textAlign = 'left'; ctx.fillStyle = '#eef2e0'; ctx.font = '700 14px "Courier New", monospace';
+    ctx.fillText(f.nome, 100, Y + 22);
+    ctx.fillStyle = '#8fb8a8'; ctx.font = '10px "Courier New", monospace';
+    const usos = MEC_DEFEITOS.filter(d => d.ferr === f.id).map(d => d.icone).join(' ');
+    ctx.fillText('conserta: ' + usos, 100, Y + 38);
+    ctx.textAlign = 'right'; ctx.fillStyle = on ? '#5fbf6a' : '#7a8a94'; ctx.font = '700 13px "Courier New", monospace';
+    ctx.fillText(on ? '✔ NO KIT' : (f.id === 'chave' ? '' : '+ ADD'), 430, Y + 28);
+    ctx.textAlign = 'left';
+    botoesTela.push({ x: 40, y: Y, w: 400, h: 46, cb: () => toggleFerr(f.id) });
+  });
+
+  // PEÇAS (direita)
+  ctx.fillStyle = '#cfe0e8'; ctx.font = '700 14px "Courier New", monospace';
+  ctx.fillText('ESTOQUE DE PEÇAS  (compre pra evitar emergência)', 470, 150);
+  MEC_PECAS.forEach((p, i) => {
+    const Y = 166 + i * 46, pc = Math.round(p.preco * m.pecaMul), qt = m.pecas[p.id] || 0;
+    rr(470, Y, W - 470 - 30, 40, 8); ctx.fillStyle = 'rgba(14,22,30,.8)'; ctx.fill();
+    rr(470, Y, W - 470 - 30, 40, 8); ctx.strokeStyle = '#3d5a6a'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.font = '20px "Segoe UI", sans-serif'; ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+    ctx.fillText(p.icone, 496, Y + 27);
+    ctx.textAlign = 'left'; ctx.fillStyle = '#eef2e0'; ctx.font = '700 13px "Courier New", monospace';
+    ctx.fillText(p.nome, 520, Y + 25);
+    ctx.fillStyle = '#ffd94d'; ctx.font = '700 12px "Courier New", monospace'; ctx.textAlign = 'right';
+    ctx.fillText('x' + qt, W - 150, Y + 25);
+    const bx = W - 130, bw = 100;
+    rr(bx, Y + 6, bw, 28, 7); ctx.fillStyle = m.grana >= pc ? '#3a7a4a' : 'rgba(60,60,60,.5)'; ctx.fill();
+    ctx.fillStyle = m.grana >= pc ? '#eafff0' : '#7a7a7a'; ctx.font = '700 12px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('R$' + pc, bx + bw / 2, Y + 24);
+    ctx.textAlign = 'left';
+    botoesTela.push({ x: bx, y: Y + 6, w: bw, h: 28, cb: () => comprarPecaKit(p.id) });
+  });
+
+  // IR PARA O CAMPO
+  const canGo = m.kit.length > 0;
+  const bw = 300, bx = W / 2 - bw / 2, by = H - 46;
+  rr(bx, by, bw, 34, 9); ctx.fillStyle = '#7cc85a'; ctx.fill();
+  ctx.fillStyle = '#0e1508'; ctx.font = '800 16px "Courier New", monospace'; ctx.textAlign = 'center';
+  ctx.fillText('▶ IR PARA O CAMPO', W / 2, by + 23);
+  botoesTela.push({ x: bx, y: by, w: bw, h: 34, cb: irCampoMec });
+  ctx.textAlign = 'left'; ctx.fillStyle = '#9fb8a8'; ctx.font = '700 11px "Courier New", monospace';
+  ctx.fillText('← trocar mecânico', 30, H - 22);
+  botoesTela.push({ x: 24, y: H - 40, w: 160, h: 26, cb: () => { m.tela = 'selecao'; } });
+}
+
+function desenharMaquina(q) {
+  const m = G.mec, quebrada = q.estado !== 'ok';
+  const sh = quebrada ? Math.sin(q.frame * 22) * 1.5 : 0;
+  ctx.fillStyle = 'rgba(10,14,8,.3)';
+  ctx.beginPath(); ctx.ellipse(q.x, q.y + 16, 30, 12, 0, 0, 7); ctx.fill();
+  ctx.save(); ctx.translate(q.x + sh, q.y);
+  ctx.drawImage(SPR.colhedora[0], -28, -18);
+  if (quebrada) { ctx.fillStyle = 'rgba(224,64,46,.28)'; ctx.beginPath(); ctx.arc(0, 0, 30, 0, 7); ctx.fill(); }
+  ctx.restore();
+  // nome + valor/h
+  ctx.textAlign = 'center'; ctx.font = '700 10px "Courier New", monospace';
+  ctx.fillStyle = quebrada ? '#ff8f80' : '#9fe36a';
+  ctx.fillText(q.nome + '  R$' + q.vh + '/h', q.x, q.y + 34);
+  if (quebrada) {
+    const d = DEF(q.defeito), perto = m.veLonge || dist2(jog.x, jog.y, q.x, q.y) < 240 * 240;
+    const pul = 0.6 + 0.4 * Math.sin(q.frame * 6);
+    ctx.strokeStyle = 'rgba(224,64,46,' + pul.toFixed(2) + ')'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(q.x, q.y, 34, 0, 7); ctx.stroke();
+    ctx.font = '20px "Segoe UI", sans-serif'; ctx.fillStyle = '#fff';
+    ctx.fillText(perto ? d.icone : '⚠️', q.x, q.y - 30);
+    if (perto) { ctx.fillStyle = d.cor; ctx.font = '700 9px "Courier New", monospace';
+      ctx.fillText(d.nome, q.x, q.y - 44); }
+  } else if (Math.random() < 0.04) {
+    part(q.x + 14, q.y - 12, { vx: [-4, 6], vy: [-20, -8], vida: [.6, 1.2], tam: [2, 4],
+      cores: ['rgba(200,205,210,.4)', 'rgba(160,166,172,.35)'], grav: -6, n: 1 });
+  }
+  ctx.textAlign = 'left';
+}
+
+function renderMecCampo() {
+  const m = G.mec, Z = MOBILE ? CFG.ZOOM_MOBILE : 1, vw = W / Z, vh = H / Z;
+  cam.x = clamp(jog.x - vw / 2, 0, MW - vw); cam.y = clamp(jog.y - vh / 2, 0, MH - vh);
+  ctx.clearRect(0, 0, W, H); ctx.save();
+  if ((G.tremor || 0) > 0) ctx.translate(rand(-1, 1) * G.tremor * 8, rand(-1, 1) * G.tremor * 8);
+  ctx.scale(Z, Z); ctx.translate(-cam.x, -cam.y);
+  ctx.drawImage(CHAO, 0, 0);
+  // depósito (usina) com zona destacada
+  ctx.drawImage(SPR.usina, USINA.x, USINA.y);
+  { const z = USINA.zona, pul = 0.5 + 0.5 * Math.sin(G.t * 3);
+    ctx.fillStyle = 'rgba(240,200,20,' + (0.08 + pul * 0.08).toFixed(3) + ')'; ctx.fillRect(z.x, z.y, z.w, z.h);
+    ctx.strokeStyle = 'rgba(240,200,20,.6)'; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
+    ctx.strokeRect(z.x, z.y, z.w, z.h); ctx.setLineDash([]);
+    ctx.fillStyle = '#ffd94d'; ctx.font = '700 12px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('🏭 DEPÓSITO', z.x + z.w / 2, z.y + z.h / 2 + 4); ctx.textAlign = 'left'; }
+  for (const r of rastros) { const a = 0.16 * (1 - r.t / 7); if (a <= 0) continue;
+    ctx.fillStyle = 'rgba(58,45,26,' + a.toFixed(3) + ')';
+    const si = Math.sin(r.ang), co = Math.cos(r.ang);
+    ctx.fillRect(r.x - si * 10 - 2, r.y + co * 10 - 2, 4, 4); ctx.fillRect(r.x + si * 10 - 2, r.y - co * 10 - 2, 4, 4); }
+  for (const q of m.maquinas) desenharMaquina(q);
+  // VAN do mecânico
+  { ctx.fillStyle = 'rgba(10,14,8,.34)'; ctx.beginPath(); ctx.ellipse(jog.x, jog.y + 12, 24, 10, 0, 0, 7); ctx.fill();
+    ctx.save(); ctx.translate(jog.x, jog.y); ctx.rotate(jog.ang);
+    ctx.fillStyle = '#2e6b9c'; rr(-20, -13, 40, 26, 6); ctx.fill();
+    ctx.fillStyle = '#3f86bd'; rr(6, -11, 12, 22, 5); ctx.fill();
+    ctx.fillStyle = '#bfe0f2'; rr(9, -8, 7, 16, 3); ctx.fill();
+    ctx.fillStyle = '#1a1a1a'; ctx.fillRect(-16, -15, 8, 3); ctx.fillRect(-16, 12, 8, 3); ctx.fillRect(8, -15, 8, 3); ctx.fillRect(8, 12, 8, 3);
+    ctx.fillStyle = '#ffd94d'; ctx.font = '700 9px "Courier New", monospace'; ctx.textAlign = 'center'; ctx.fillText('🔧', -6, 3);
+    const bp = 0.5 + 0.5 * Math.sin(G.t * 9);
+    ctx.fillStyle = 'rgba(255,220,60,' + (0.4 + bp * 0.6).toFixed(2) + ')';
+    ctx.beginPath(); ctx.arc(-6, -6, 3.5 + bp * 2, 0, 7); ctx.fill(); ctx.restore(); ctx.textAlign = 'left'; }
+  // prompt de ação sobre o alvo
+  if (m.hover) {
+    const tx = m.hover.tipo === 'depot' ? USINA.zona.x + USINA.zona.w / 2 : m.hover.maq.x;
+    const ty = m.hover.tipo === 'depot' ? USINA.zona.y - 14 : m.hover.maq.y - 62;
+    const txt = m.hover.tipo === 'depot' ? '🏭 ABRIR DEPÓSITO' : '🔧 CONSERTAR';
+    ctx.font = '700 12px "Courier New", monospace'; const w = ctx.measureText(txt).width + 20;
+    ctx.fillStyle = 'rgba(12,18,10,.9)'; rr(tx - w / 2, ty - 16, w, 22, 6); ctx.fill();
+    ctx.strokeStyle = '#ffd94d'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#ffd94d'; ctx.textAlign = 'center'; ctx.fillText(txt, tx, ty); ctx.textAlign = 'left';
+  }
+  for (const p of parts) { ctx.globalAlpha = clamp(1 - p.t / p.vida, 0, 1); ctx.fillStyle = p.cor; ctx.fillRect(p.x, p.y, p.tam, p.tam); }
+  ctx.globalAlpha = 1; ctx.font = '700 13px "Courier New", monospace';
+  for (const f of flutu) { ctx.globalAlpha = clamp(1 - f.t / 1.3, 0, 1); ctx.fillStyle = f.cor; ctx.fillText(f.txt, f.x - 14, f.y - f.t * 30); }
+  ctx.globalAlpha = 1; ctx.restore();
+}
+
+function desenharMecHUD() {
+  const m = G.mec, grande = MOBILE;
+  const rodando = m.maquinas.filter(q => q.estado === 'ok').length, tot = m.maquinas.length;
+  const taxa = m.maquinas.reduce((s, q) => s + (q.estado === 'ok' ? q.vh : 0), 0);
+  ctx.fillStyle = 'rgba(8,14,18,.55)'; ctx.fillRect(0, 0, W, grande ? 74 : 60);
+  // relógio
+  ctx.textAlign = 'center'; const tarde = G.hora >= 21 * 60;
+  ctx.font = '800 ' + (grande ? 34 : 28) + 'px "Courier New", monospace';
+  ctx.fillStyle = tarde && Math.floor(G.t * 4) % 2 === 0 ? '#ff5a4a' : '#eef2e0';
+  ctx.fillText(hhmm(G.hora), W / 2, grande ? 40 : 34);
+  ctx.font = '700 10px "Courier New", monospace'; ctx.fillStyle = '#9fb8a8';
+  ctx.fillText('fim às 22:00', W / 2, grande ? 56 : 48);
+  // grana
+  ctx.textAlign = 'left'; ctx.fillStyle = '#ffd94d'; ctx.font = '800 ' + (grande ? 24 : 20) + 'px "Courier New", monospace';
+  ctx.fillText('R$ ' + Math.floor(m.grana), 16, grande ? 40 : 34);
+  ctx.fillStyle = '#7fd47f'; ctx.font = '700 11px "Courier New", monospace';
+  ctx.fillText('+R$' + Math.round(taxa) + '/h rodando', 16, grande ? 56 : 48);
+  // status máquinas + manutenções
+  ctx.textAlign = 'right'; ctx.font = '800 ' + (grande ? 20 : 17) + 'px "Courier New", monospace';
+  ctx.fillStyle = rodando === tot ? '#7fd47f' : '#ffb03a';
+  ctx.fillText('⚙ ' + rodando + '/' + tot + ' rodando', W - 180, grande ? 36 : 30);
+  ctx.fillStyle = '#8fd6e8'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('🔧 ' + m.manutencoes + ' manutenções', W - 180, grande ? 54 : 46);
+  ctx.textAlign = 'left';
+  // minimapa (canto sup. direito)
+  { const rw = grande ? 150 : 130, rh = rw * MH / MW, rx = W - rw - 12, ry = grande ? 66 : 60;
+    ctx.fillStyle = 'rgba(8,14,8,.8)'; ctx.fillRect(rx, ry, rw, rh);
+    ctx.strokeStyle = '#3c4a30'; ctx.lineWidth = 2; ctx.strokeRect(rx, ry, rw, rh);
+    const sx = rw / MW, sy = rh / MH;
+    ctx.fillStyle = 'rgba(240,200,20,.8)'; ctx.fillRect(rx + USINA.zona.x * sx - 2, ry + USINA.zona.y * sy - 2, 5, 5);
+    for (const q of m.maquinas) { ctx.fillStyle = q.estado === 'ok' ? '#5fbf6a' : (Math.floor(G.t * 4) % 2 ? '#ff4a3a' : '#ff9a3a');
+      ctx.fillRect(rx + q.x * sx - 2, ry + q.y * sy - 2, 5, 5); }
+    ctx.fillStyle = '#fff'; ctx.fillRect(rx + jog.x * sx - 2, ry + jog.y * sy - 2, 4, 4); }
+  // peças (linha inferior esquerda)
+  ctx.font = '700 ' + (grande ? 14 : 12) + 'px "Courier New", monospace'; ctx.textAlign = 'left';
+  let px = 14; ctx.fillStyle = '#9fb8a8'; ctx.fillText('peças:', px, H - 16); px += 54;
+  for (const p of MEC_PECAS) { const qt = m.pecas[p.id] || 0;
+    ctx.fillStyle = qt > 0 ? '#eef2e0' : '#5a6a54'; ctx.font = (grande ? 16 : 14) + 'px "Segoe UI", sans-serif';
+    ctx.fillText(p.icone, px, H - 15); ctx.font = '700 11px "Courier New", monospace';
+    ctx.fillText('x' + qt, px + 18, H - 15); px += 48; }
+  // botão de ação (mobile) / dica (desktop)
+  if (m.hover && !m.reparo && !m.depot) {
+    if (grande) { const bw = 150, bx = W - bw - 16, by = H - 78;
+      const txt = m.hover.tipo === 'depot' ? '🏭 DEPÓSITO' : '🔧 CONSERTAR';
+      ctx.fillStyle = 'rgba(20,30,16,.92)'; rr(bx, by, bw, 52, 10); ctx.fill();
+      ctx.strokeStyle = '#f0c814'; ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.fillStyle = '#ffd94d'; ctx.font = '800 14px "Courier New", monospace'; ctx.textAlign = 'center';
+      ctx.fillText(txt, bx + bw / 2, by + 31); ctx.textAlign = 'left';
+      botoesTela.push({ x: bx, y: by, w: bw, h: 52, cb: acaoMec });
+    } else { ctx.fillStyle = '#ffd94d'; ctx.font = '700 14px "Courier New", monospace'; ctx.textAlign = 'center';
+      ctx.fillText('ESPAÇO para ' + (m.hover.tipo === 'depot' ? 'abrir o depósito' : 'consertar'), W / 2, H - 40); ctx.textAlign = 'left'; }
+  }
+  // dica inicial
+  if (m.t < 6) { ctx.fillStyle = 'rgba(255,255,255,' + (clamp(1 - m.t / 6, 0, 1) * 0.9) + ')';
+    ctx.font = '700 14px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText(MOBILE ? 'Arraste para dirigir até as máquinas vermelhas' : 'WASD/setas para dirigir · chegue perto das máquinas quebradas', W / 2, H - 62); ctx.textAlign = 'left'; }
+  // pausa (só desktop tem tecla; botão no canto)
+  const pb = grande ? 40 : 32, ppx = W - pb - 8, ppy = H - pb - 8;
+}
+
+function desenharMecReparo() {
+  const m = G.mec, r = m.reparo, d = r.def;
+  ctx.fillStyle = 'rgba(6,10,14,.72)'; ctx.fillRect(0, 0, W, H);
+  const { x, y } = painel(560, 300);
+  ctx.textAlign = 'center';
+  ctx.font = '34px "Segoe UI", sans-serif'; ctx.fillStyle = d.cor; ctx.fillText(d.icone, W / 2, y + 52);
+  ctx.fillStyle = '#eef2e0'; ctx.font = '800 22px "Courier New", monospace'; ctx.fillText(d.nome, W / 2, y + 84);
+  ctx.fillStyle = '#9fb8a8'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText(r.maq.nome + '  ·  ' + FERR(d.ferr).icone + ' ' + FERR(d.ferr).nome + '  +  ' + PECA(d.peca).icone + ' ' + PECA(d.peca).nome, W / 2, y + 106);
+  if (r.emerg) { ctx.fillStyle = '#ff9a3a'; ctx.font = '700 11px "Courier New", monospace';
+    ctx.fillText('💸 peça de emergência', W / 2, y + 122); }
+  // barra de torque
+  const bx = x + 40, bw = 480, by = y + 150, bh = 34;
+  ctx.fillStyle = 'rgba(0,0,0,.5)'; rr(bx, by, bw, bh, 8); ctx.fill();
+  ctx.fillStyle = 'rgba(95,191,106,.5)'; ctx.fillRect(bx + r.zi * bw, by, (r.zf - r.zi) * bw, bh);
+  ctx.strokeStyle = '#5fbf6a'; ctx.lineWidth = 2; ctx.strokeRect(bx + r.zi * bw, by, (r.zf - r.zi) * bw, bh);
+  const mx = bx + r.marcador * bw;
+  ctx.fillStyle = r.penal > 0 ? '#ff5a4a' : '#ffd94d'; ctx.fillRect(mx - 3, by - 6, 6, bh + 12);
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(mx, by - 8); ctx.lineTo(mx - 5, by - 16); ctx.lineTo(mx + 5, by - 16); ctx.fill();
+  // parafusos
+  for (let i = 0; i < r.bolts; i++) { ctx.fillStyle = i < r.feitos ? '#5fbf6a' : '#55603f';
+    ctx.beginPath(); ctx.arc(bx + 20 + i * 26, by + bh + 22, 7, 0, 7); ctx.fill();
+    ctx.fillStyle = i < r.feitos ? '#0e1508' : '#8a9a7a'; ctx.font = '700 10px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText(i < r.feitos ? '✔' : '✚', bx + 20 + i * 26, by + bh + 26); }
+  ctx.textAlign = 'center'; ctx.fillStyle = '#cfe0b8'; ctx.font = '700 13px "Courier New", monospace';
+  ctx.fillText(r.feitos + ' / ' + r.bolts + ' apertos', W / 2, by + bh + 52);
+  // botão torque
+  const tb = MOBILE ? 64 : 44, tw = 260, tx = W / 2 - tw / 2, ty = y + 250;
+  ctx.fillStyle = r.penal > 0 ? 'rgba(90,50,40,.8)' : '#f0c814'; rr(tx, ty, tw, tb, 10); ctx.fill();
+  ctx.fillStyle = r.penal > 0 ? '#ffb0a0' : '#0e1508'; ctx.font = '800 ' + (MOBILE ? 20 : 16) + 'px "Courier New", monospace';
+  ctx.fillText(r.penal > 0 ? '✋ escapou!' : '🔧 APERTAR (ESPAÇO)', W / 2, ty + tb / 2 + 6);
+  botoesTela.push({ x: tx, y: ty, w: tw, h: tb, cb: torqueMec });
+  ctx.textAlign = 'left';
+}
+
+function desenharMecDepot() {
+  const m = G.mec;
+  ctx.fillStyle = 'rgba(6,10,14,.72)'; ctx.fillRect(0, 0, W, H);
+  const { x, y } = painel(600, 380);
+  ctx.textAlign = 'center'; ctx.fillStyle = '#ffd94d'; ctx.font = '800 24px "Segoe UI", sans-serif';
+  ctx.fillText('🏭 DEPÓSITO', W / 2, y + 40);
+  ctx.fillStyle = '#ffd94d'; ctx.font = '800 18px "Courier New", monospace';
+  ctx.fillText('R$ ' + Math.floor(m.grana), W / 2, y + 64);
+  ctx.textAlign = 'left'; ctx.fillStyle = '#cfe0e8'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('PEÇAS (preço normal)', x + 30, y + 92);
+  MEC_PECAS.forEach((p, i) => { const Y = y + 100 + i * 40, pc = Math.round(p.preco * m.pecaMul), qt = m.pecas[p.id] || 0;
+    ctx.font = '18px "Segoe UI", sans-serif'; ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.fillText(p.icone, x + 46, Y + 20);
+    ctx.textAlign = 'left'; ctx.fillStyle = '#eef2e0'; ctx.font = '700 12px "Courier New", monospace'; ctx.fillText(p.nome, x + 66, Y + 18);
+    ctx.fillStyle = '#ffd94d'; ctx.textAlign = 'right'; ctx.fillText('x' + qt, x + 300, Y + 18);
+    const bx = x + 320, bw = 90; rr(bx, Y, bw, 30, 7); ctx.fillStyle = m.grana >= pc ? '#3a7a4a' : 'rgba(60,60,60,.5)'; ctx.fill();
+    ctx.fillStyle = m.grana >= pc ? '#eafff0' : '#7a7a7a'; ctx.font = '700 12px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('R$' + pc, bx + bw / 2, Y + 20); ctx.textAlign = 'left';
+    botoesTela.push({ x: bx, y: Y, w: bw, h: 30, cb: () => comprarPecaKit(p.id) }); });
+  // kit (trocar ferramentas)
+  ctx.fillStyle = '#cfe0e8'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('KIT (' + m.kit.length + '/' + m.slots + ')', x + 440, y + 92);
+  MEC_FERRAMENTAS.forEach((f, i) => { const Y = y + 100 + i * 40, on = m.kit.includes(f.id);
+    rr(x + 440, Y, 130, 32, 7); ctx.fillStyle = on ? 'rgba(60,120,80,.4)' : 'rgba(14,22,30,.8)'; ctx.fill();
+    ctx.strokeStyle = on ? '#5fbf6a' : '#3d5a6a'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = '16px "Segoe UI", sans-serif'; ctx.textAlign = 'center'; ctx.fillText(f.icone, x + 458, Y + 21);
+    ctx.fillStyle = on ? '#9fe36a' : '#cfe0e8'; ctx.font = '700 10px "Courier New", monospace'; ctx.textAlign = 'left';
+    ctx.fillText(f.nome.slice(0, 12), x + 474, Y + 20); ctx.textAlign = 'left';
+    botoesTela.push({ x: x + 440, y: Y, w: 130, h: 32, cb: () => toggleFerr(f.id) }); });
+  const bw = 200, bx = W / 2 - bw / 2, by2 = y + 380 - 44;
+  rr(bx, by2, bw, 32, 8); ctx.fillStyle = '#7cc85a'; ctx.fill();
+  ctx.fillStyle = '#0e1508'; ctx.font = '800 14px "Courier New", monospace'; ctx.textAlign = 'center';
+  ctx.fillText('▶ VOLTAR AO CAMPO', W / 2, by2 + 21);
+  botoesTela.push({ x: bx, y: by2, w: bw, h: 32, cb: () => { m.depot = false; } });
+  ctx.textAlign = 'left';
+}
+
+function desenharMecFim() {
+  const m = G.mec;
+  ctx.fillStyle = 'rgba(8,16,22,.85)'; ctx.fillRect(0, 0, W, H);
+  const { x, y } = painel(600, 440);
+  ctx.textAlign = 'center'; ctx.fillStyle = '#ffd94d'; ctx.font = '800 28px "Segoe UI", sans-serif';
+  ctx.fillText('🔧 FIM DO TURNO', W / 2, y + 44);
+  ctx.fillStyle = '#9fb8a8'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('Mecânico ' + (G.nomeJogador || 'OPERADOR') + ' · ' + (m.talento ? m.talento.nome : ''), W / 2, y + 68);
+  ctx.fillStyle = Math.floor(m.grana) >= 0 ? '#7fe36a' : '#ff6a5e'; ctx.font = '800 50px "Courier New", monospace';
+  ctx.fillText('R$ ' + Math.floor(m.grana), W / 2, y + 128);
+  ctx.fillStyle = '#9fb8a8'; ctx.font = '700 11px "Courier New", monospace';
+  ctx.fillText('CAIXA FINAL (seu placar)', W / 2, y + 148);
+  // stats: ganhos e perdas
+  const linhas = [
+    ['🏭 Produção das máquinas', '+R$' + Math.floor(m.producao), '#7fd47f'],
+    ['🧰 Gasto com peças', '-R$' + Math.floor(m.custoPecas), '#ff9a5e'],
+    ['⏱️ Perdido em paradas', '-R$' + Math.floor(m.perdaParada), '#ff7a5e'],
+    ['🔧 Manutenções feitas', '' + m.manutencoes, '#8fd6e8'],
+    ['⚠️ Quebras no turno', '' + m.quebrasTot, '#cfe0b8'],
+  ];
+  linhas.forEach((l, i) => { const Y = y + 176 + i * 26;
+    ctx.textAlign = 'left'; ctx.fillStyle = '#cfe0e8'; ctx.font = '700 13px "Courier New", monospace'; ctx.fillText(l[0], x + 40, Y);
+    ctx.textAlign = 'right'; ctx.fillStyle = l[2]; ctx.fillText(l[1], x + 560 - 40, Y); });
+  ctx.textAlign = 'center'; ctx.fillStyle = m.novoRec ? '#ffd94d' : '#9fb8a8'; ctx.font = '700 13px "Courier New", monospace';
+  ctx.fillText(m.novoRec ? '✨ NOVO RECORDE DE CAIXA! ✨' : ('Recorde: R$ ' + m.recorde), W / 2, y + 326);
+  // ranking curto
+  const rank = m._rank || [];
+  ctx.fillStyle = '#ffd94d'; ctx.font = '700 12px "Courier New", monospace'; ctx.fillText('🏅 MELHORES CAIXAS', W / 2, y + 350);
+  ctx.font = '11px "Courier New", monospace';
+  rank.slice(0, 3).forEach((e, i) => { const meu = e.t === m._rankT;
+    ctx.fillStyle = meu ? '#ffd94d' : '#cfe0b8';
+    ctx.fillText((i + 1) + 'º ' + e.n + '  R$' + e.g + '  (' + e.mn + ' manut.)', W / 2, y + 368 + i * 16); });
+  if (m.fimT > 0.5) {
+    chip(x + 40, y + 440 - 44, 240, 34, '🔄 JOGAR DE NOVO', null, true, iniciarMecanico);
+    chip(x + 320, y + 440 - 44, 240, 34, '🏠 VOLTAR AO MENU', null, true, () => { G.fase = 'menu'; });
+  }
+}
+
+function renderMecanico() {
+  const m = G.mec;
+  if (m.tela === 'selecao') return desenharMecSelecao();
+  if (m.tela === 'kit') return desenharMecKit();
+  renderMecCampo();
+  desenharMecHUD();
+  if (m.depot) desenharMecDepot();
+  if (m.reparo) desenharMecReparo();
+  if (m.fim) desenharMecFim();
+}
+
 function render() {
   botoesTela.length = 0;
   if (G.fase === 'survivor') { renderSurvivor(); return; }
+  if (G.fase === 'mecanico') { renderMecanico(); return; }
   const Z = MOBILE ? CFG.ZOOM_MOBILE : 1;
   const vw = W / Z, vh = H / Z;                     // janela de mundo visível
   cam.x = clamp(jog.x - vw / 2, 0, MW - vw);
@@ -3977,6 +4566,13 @@ function desenharMenu() {
   }
 
   // ══════════════════ BARRA INFERIOR ══════════════════
+  { const pw = 400, pxp = cx - pw / 2, pyp = 420, pulse = 0.5 + 0.5 * Math.sin(t * 3);
+    ctx.save(); ctx.shadowColor = 'rgba(120,175,225,' + (0.3 + pulse * 0.45) + ')'; ctx.shadowBlur = 16;
+    rrect(pxp, pyp, pw, 32, 16); ctx.fillStyle = '#2e6b9c'; ctx.fill(); ctx.restore();
+    rrect(pxp, pyp, pw, 32, 16); ctx.strokeStyle = '#8fd6e8'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#eaf4fb'; ctx.font = '800 14px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('🔧 NOVO: MECÂNICO DE CAMPO  →', cx, pyp + 21);
+    botoesTela.push({ x: pxp, y: pyp, w: pw, h: 32, cb: iniciarMecanico }); ctx.textAlign = 'left'; }
   ctx.fillStyle = 'rgba(6,10,4,.5)'; ctx.fillRect(0, H - 44, W, 44);
   ctx.textAlign = 'left'; ctx.fillStyle = '#cfe0b8'; ctx.font = '700 12px "Courier New", monospace';
   ctx.fillText('\uD83C\uDFC6 Campanha: ' + G.recDias + 'd · pico ' + $(G.recGrana), 20, H - 18);
@@ -4319,6 +4915,20 @@ const AJUDA_PAGS = [
     'JAVALÃO gigante. Sobreviva o máximo possível: o recorde de',
     'tempo fica salvo. Pause com P (ou o botão no canto).',
   ]},
+  { t: '🔧 MECÂNICO DE CAMPO (novo modo)', l: [
+    'Você é o mecânico que mantém a safra viva!',
+    '1) Escolha 1 dos 8 mecânicos — cada um tem um TALENTO próprio',
+    '   (reparo mais rápido, peças mais baratas, +1 espaço no kit…).',
+    '2) Monte o KIT: ferramentas (espaços limitados) + estoque de',
+    '   peças comprado com seu orçamento inicial.',
+    '3) No campo (06:00→22:00), dirija a van até as máquinas em',
+    '   pane. Cada defeito pede FERRAMENTA + PEÇA certas:',
+    '   🌡️ motor · ⛓️ rodante · 🔽 filtro · 💧 hidráulico · ⚡ elétrico',
+    '4) Reparo = torque: aperte com o marcador na zona verde.',
+    'Máquina rodando gera R$/h; parada, você PERDE essa produção.',
+    'Sem peça? Emergência custa 1.8× — ou reabasteça no 🏭 DEPÓSITO.',
+    'Placar = caixa final (produção − peças). Ranking fica salvo.',
+  ]},
   { t: '🏁 CAMPANHA & RANKING', l: [
     'A safra é a CAMPANHA que você escolheu (1 a 5 dias). Bata a',
     'meta do último dia para VENCER a temporada.',
@@ -4562,6 +5172,17 @@ window.addEventListener('keydown', e => {
     if (e.code === 'KeyP' || e.code === 'Escape') { G.pausa = !G.pausa; return; }
     // teclas de movimento caem para o switch abaixo
   }
+  if (G.fase === 'mecanico') {
+    const m = G.mec;
+    if (m.tela !== 'campo') return;              // seleção/kit por clique
+    if (m.fim) { if ((e.code === 'Space' || e.code === 'Enter') && m.fimT > 0.5) iniciarMecanico();
+                 else if (e.code === 'Escape') G.fase = 'menu'; return; }
+    if (m.reparo) { if (e.code === 'Space' || e.code === 'Enter') torqueMec(); return; }
+    if (m.depot) { if (e.code === 'Escape' || e.code === 'Space' || e.code === 'Enter') m.depot = false; return; }
+    if (e.code === 'Space' || e.code === 'Enter') { acaoMec(); return; }
+    if (e.code === 'Escape') { G.fase = 'menu'; return; }
+    // WASD/setas caem para o switch (movimento)
+  }
   switch (e.code) {
     case 'KeyW': case 'ArrowUp': kb.fwd = true; break;
     case 'KeyS': case 'ArrowDown': kb.re = true; break;
@@ -4627,6 +5248,12 @@ canvas.addEventListener('pointerdown', e => {
   if (G.fase === 'survivor') {
     const s = G.surv;
     if (s.escolhendo || s.fim) return;             // cards/botões já tratados acima
+    if (TOQUE) joySurv = { id: e.pointerId, ox: x, oy: y, dx: 0, dy: 0, ativo: true };
+    return;
+  }
+  if (G.fase === 'mecanico') {
+    const m = G.mec;
+    if (m.tela !== 'campo' || m.reparo || m.depot || m.fim) return;  // telas/overlays usam botões
     if (TOQUE) joySurv = { id: e.pointerId, ox: x, oy: y, dx: 0, dy: 0, ativo: true };
     return;
   }
@@ -4731,6 +5358,9 @@ globalThis.__T = {
          listaContratos, EVENTOS, EVENTOS_PLANTIO, CONTRATOS, CONTRATOS_PLANTIO, sortearDia,
          fazerRng, comSemente, fazerCodigo, lerCodigo, meuResultado, criarDesafio,
          entrarDesafio, compartilharCodigo, gerarMundo, plantarCampoInicial,
+         iniciarMecanico, escolherMec, irCampoMec, acaoMec, torqueMec, quebrarMaquina,
+         atualizarMecanico, fimMecanico, iniciarReparoMec, comprarPecaKit, toggleFerr,
+         MEC_DEFEITOS, MEC_PECAS, MEC_FERRAMENTAS, MEC_TALENTOS,
          iniciarSurvivor, atualizarSurvivor, criarInimigo, criarBoss, ganharXP,
          abrirEscolha, escolherMelhoria, fimSurvivor, spawnInimigo,
          SURV_ARMAS, SURV_PASSIVAS, SURV_MOBS },
