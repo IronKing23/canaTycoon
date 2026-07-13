@@ -214,6 +214,7 @@ const CFG = {
   SURV_CRIT: 0.16, SURV_CRIT_MULT: 2.2,
   MEC_GRANA_INI: 1500, MEC_EMERG_MULT: 1.8, MEC_VEL: 190, CHAVE_MEC: 'canaTycoon_mecRank',
   MEC_TANQUE: 100, MEC_CONSUMO: 1.05, MEC_DIESEL_PRECO: 3, MEC_RESGATE: 350, MEC_DRONE_TAXA: 1.4,
+  MEC_META_BASE: 10000, MEC_META_INC: 3500,
   CHAVE_SURV: 'canaTycoon_survRec',
   CHAVE_DIAS: 'canaTycoon_dias',
   PLANTIO_MIN_POR_SEG: 8,            // plantio: 24h de jogo em 3 min reais
@@ -2881,6 +2882,24 @@ const MEC_POS = [
   { x: 1880, y: 560, nome: 'Trator T-8', vh: 180 }, { x: 620, y: 1120, nome: 'CH-570 #3', vh: 260 },
   { x: 1320, y: 1280, nome: 'Trator T-9', vh: 200 }, { x: 2000, y: 1240, nome: 'CH-670 #4', vh: 420 },
 ];
+const MEC_POS_EXTRA = [
+  { x: 1650, y: 950, nome: 'CH-570 #5', vh: 300 },
+  { x: 350, y: 1550, nome: 'CH-670 #6', vh: 460 },
+];
+const MEC_UPGRADES = [
+  { id: 'motor',   icone: '🚛', nome: 'Motor turbinado', max: 3, precos: [1800, 3200, 5200], desc: '+12% velocidade' },
+  { id: 'tanque',  icone: '⛽', nome: 'Tanque maior',    max: 3, precos: [1400, 2600, 4200], desc: '+25L de diesel' },
+  { id: 'bau',     icone: '🧰', nome: 'Baú extra',       max: 1, precos: [2800],             desc: '+1 espaço no kit' },
+  { id: 'bancada', icone: '🔩', nome: 'Bancada de precisão', max: 3, precos: [2200, 4000, 6400], desc: 'mini-games +fáceis' },
+  { id: 'droneCt', icone: '🚁', nome: 'Contrato de drone', max: 2, precos: [2400, 4600],     desc: 'taxa 1.25× / 1.1×' },
+  { id: 'estoque', icone: '📦', nome: 'Estoque matinal', max: 3, precos: [1600, 3000, 4800], desc: '+1 de cada peça/dia' },
+];
+function difMec() {                                             // dificuldade do dia
+  const d = (G.mec && G.mec.dia || 1) - 1;
+  return { quebraRed: d * 1.1, seca: Math.min(0.7, 0.4 + d * 0.03),
+    preMin: Math.max(5, 8 - d * 0.4), preMax: Math.max(6.5, 11 - d * 0.4),
+    graveT: Math.max(16, 26 - d), evRed: d * 2.5 };
+}
 const FERR = id => MEC_FERRAMENTAS.find(f => f.id === id);
 const PECA = id => MEC_PECAS.find(p => p.id === id);
 const DEF = id => MEC_DEFEITOS.find(d => d.id === id);
@@ -2898,8 +2917,39 @@ function iniciarMecanico() {
     proxQuebra: 6, t: 0, fim: false, fimT: 0, recorde: rec, novoRec: false,
     diesel: CFG.MEC_TANQUE, custoDiesel: 0, resgate: false, drones: [], dronePainel: false,
     capis: [], bandos: [], streak: 0, bonusTotal: 0, evento: null, proxEvento: 38,
-    banner: null, turbo: false, turboOn: false };
+    banner: null, turbo: false, turboOn: false,
+    dia: 1, metaDia: CFG.MEC_META_BASE, prodDia: 0, bonusDia: 0, custoDia: 0,
+    maxTanque: CFG.MEC_TANQUE, up: { motor: 0, tanque: 0, bau: 0, bancada: 0, droneCt: 0, estoque: 0 },
+    resumo: null, diasOk: 0 };
+  let recD = 0; try { recD = Number(localStorage.getItem(CFG.CHAVE_MEC + '_dias')) || 0; } catch (e) {}
+  G.mec.recordeDias = recD;
   G.pausa = false;
+}
+function comprarUpgradeMec(id) {
+  const m = G.mec, u = MEC_UPGRADES.find(x => x.id === id), nv = m.up[id];
+  if (nv >= u.max) return;
+  const pc = u.precos[nv];
+  if (m.grana < pc) { toast('💰 Sem caixa pra ' + u.nome + ' (R$' + pc + ')'); SFX.multa(); return; }
+  m.grana -= pc; m.up[id]++;
+  if (id === 'tanque') m.maxTanque += 25;
+  if (id === 'bau') { m.slots++; }
+  toast(u.icone + ' ' + u.nome + ' nível ' + m.up[id] + '!', 2.5); SFX.recorde();
+}
+function fimDoDiaMec() {
+  const m = G.mec; if (m.fim || m.tela === 'resumo') return;
+  const lucro = Math.floor(m.prodDia + m.bonusDia - m.custoDia);
+  if (lucro >= m.metaDia) {
+    m.tela = 'resumo'; m.reparo = null; m.depot = false; m.dronePainel = false;
+    m.resumo = { lucro, meta: m.metaDia, dia: m.dia }; jog.movendo = false; SFX.vendona();
+  } else fimMecanico(lucro);
+}
+function proximoDiaMec() {
+  const m = G.mec;
+  m.dia++; m.diasOk = m.dia - 1;
+  m.metaDia = CFG.MEC_META_BASE + CFG.MEC_META_INC * (m.dia - 1);
+  for (const p of MEC_PECAS) m.pecas[p.id] = (m.pecas[p.id] || 0) + m.up.estoque;
+  m.streak = 0; m.resumo = null;
+  irCampoMec();
 }
 function escolherMec(i) {
   const m = G.mec; m.mecIdx = i; m.talento = MEC_TALENTOS[i];
@@ -2924,13 +2974,17 @@ function toggleFerr(id) {
 function comprarPecaKit(id) {
   const m = G.mec, pc = Math.round(PECA(id).preco * m.pecaMul);
   if (m.grana < pc) { toast('💰 Sem grana pra ' + PECA(id).nome); SFX.multa(); return; }
-  m.grana -= pc; m.custoPecas += pc; m.pecas[id] = (m.pecas[id] || 0) + 1; SFX.peca();
+  m.grana -= pc; m.custoPecas += pc; m.custoDia += pc; m.pecas[id] = (m.pecas[id] || 0) + 1; SFX.peca();
 }
 function irCampoMec() {
   const m = G.mec;
-  m.maquinas = MEC_POS.map((p, i) => ({ id: i, x: p.x, y: p.y, baseX: p.x, baseY: p.y,
+  const frota = MEC_POS.concat(MEC_POS_EXTRA.slice(0, m.dia >= 5 ? 2 : m.dia >= 3 ? 1 : 0));
+  m.maquinas = frota.map((p, i) => ({ id: i, x: p.x, y: p.y, baseX: p.x, baseY: p.y,
     nome: p.nome, vh: p.vh, estado: 'ok', defeito: null, alertaT: 0, frame: rand(0, 5),
     wAng: rand(0, 6.28), wT: rand(2, 5) }));
+  m.prodDia = 0; m.bonusDia = 0; m.custoDia = 0; m.aviso21 = false;
+  m.diesel = m.maxTanque; m.evento = null; m.banner = null; m.drones.length = 0; m.resgate = false;
+  m.proxEvento = Math.max(26, 38 - difMec().evRed);
   m.capis = []; for (let i = 0; i < 5; i++)
     m.capis.push({ x: rand(200, MW - 200), y: rand(300, MH - 200), ang: rand(0, 6.28),
       estado: 'pasta', t: rand(1, 3), flip: 1 });
@@ -2938,7 +2992,7 @@ function irCampoMec() {
     m.bandos.push({ x: rand(300, MW - 300), y: rand(400, MH - 300), n: randi(3, 5), voou: 0 });
   jog.x = MW / 2; jog.y = MH / 2; jog.ang = 0; jog.movendo = false; jog.turbo = 0;
   G.hora = CFG.HORA_INI; m.tela = 'campo'; m.t = 0; m.proxQuebra = 5;
-  toast('🔧 Turno começou! Mantenha as máquinas rodando até as 22:00.', 4);
+  toast('🔧 DIA ' + m.dia + ' — meta de lucro: ' + $(m.metaDia) + ' até as 22:00!', 4.5);
   SFX.dia();
 }
 function moverMec(dt) {
@@ -2949,7 +3003,7 @@ function moverMec(dt) {
   const semDiesel = m.diesel <= 0;
   if (semDiesel) m.turboOn = false;
   const tb = (m.turbo || m.turboOn) && !semDiesel;
-  const mag = Math.hypot(dx, dy), vel = semDiesel ? 0 : CFG.MEC_VEL * (tb ? 1.55 : 1);
+  const mag = Math.hypot(dx, dy), vel = semDiesel ? 0 : CFG.MEC_VEL * (1 + 0.12 * m.up.motor) * (tb ? 1.55 : 1);
   if (mag > 0.15 && !semDiesel) {
     const mm = mag < 1 ? 1 : mag;
     jog.x = clamp(jog.x + (dx / mm) * vel * dt, 40, MW - 40);
@@ -2970,11 +3024,13 @@ function moverMec(dt) {
 /* ── drones de entrega (peças e diesel) ─────────────────────────── */
 function pedirDrone(pecaId) {                                  // pecaId ou 'diesel'
   const m = G.mec;
+  const taxaDr = [CFG.MEC_DRONE_TAXA, 1.25, 1.1][m.up.droneCt] || 1.1;
   const custo = pecaId === 'diesel' ? CFG.MEC_RESGATE
-    : Math.round(PECA(pecaId).preco * m.pecaMul * CFG.MEC_DRONE_TAXA);
+    : Math.round(PECA(pecaId).preco * m.pecaMul * taxaDr);
   if (pecaId === 'diesel') { if (m.resgate) return; }
   if (m.grana < custo && pecaId !== 'diesel') { toast('💰 Sem grana pro drone (R$' + custo + ')'); SFX.multa(); return; }
   m.grana -= custo;
+  m.custoDia += custo;
   if (pecaId === 'diesel') { m.custoDiesel += custo; m.resgate = true;
     toast('🚁 Drone-tanque a caminho! (R$' + custo + ')', 3); }
   else { m.custoPecas += custo; toast('🚁 ' + PECA(pecaId).icone + ' ' + PECA(pecaId).nome + ' a caminho (R$' + custo + ')', 2.5); }
@@ -2992,7 +3048,7 @@ function atualizarDronesMec(dt) {
     if (ds < 26) {
       if (d.fase === 'indo') {
         d.fase = 'volta';
-        if (d.carga === 'diesel') { m.diesel = Math.min(CFG.MEC_TANQUE, m.diesel + 55); m.resgate = false;
+        if (d.carga === 'diesel') { m.diesel = Math.min(m.maxTanque, m.diesel + 55); m.resgate = false;
           flut(jog.x, jog.y - 44, '⛽ +55L', '#8fd6e8'); }
         else { m.pecas[d.carga] = (m.pecas[d.carga] || 0) + 1;
           flut(jog.x, jog.y - 44, PECA(d.carga).icone + ' entregue!', '#8fe36a'); }
@@ -3029,8 +3085,9 @@ function quebrarMaquina(seca, defId) {
   if (!ok.length) return null;
   const q = escolha(ok), d = defId ? DEF(defId) : escolha(MEC_DEFEITOS);
   q.defeito = d.id;
-  if (!seca && Math.random() < 0.6) {                          // fase de alerta: dá pra prevenir!
-    q.estado = 'alerta'; q.preT = rand(8, 11); SFX.peca();
+  const df = difMec();
+  if (!seca && Math.random() < 1 - df.seca) {                  // fase de alerta: dá pra prevenir!
+    q.estado = 'alerta'; q.preT = rand(df.preMin, df.preMax); SFX.peca();
   } else panerMaquina(q);
   return q;
 }
@@ -3111,10 +3168,11 @@ function iniciarReparoMec(q) {
   const vm = m.velMul || 1;
   const r = { maq: q, def: d, mg: d.mg || 'torque', bolts: d.bolts + (q.grave ? 1 : 0),
     feitos: 0, penal: 0, erros: 0, emerg };
-  if (r.mg === 'torque') { r.vel = d.vel / vm; r.zona = d.zona; novaZonaMec(r); }
-  else if (r.mg === 'tensao') { r.fase = rand(0, 6.28); r.velT = 3.0 / vm; r.z = 0.13; }
-  else if (r.mg === 'mash') { r.prog = 0; r.taxa = 0.15 * vm; }
-  else if (r.mg === 'pressao') { r.press = 0; r.enchendo = false; novaFaixaMec(r, vm); }
+  const fb2 = 1 + 0.1 * (m.up ? m.up.bancada : 0);
+  if (r.mg === 'torque') { r.vel = d.vel / vm; r.zona = d.zona * fb2; novaZonaMec(r); }
+  else if (r.mg === 'tensao') { r.fase = rand(0, 6.28); r.velT = 3.0 / vm; r.z = 0.13 * fb2; }
+  else if (r.mg === 'mash') { r.prog = 0; r.taxa = 0.15 * vm * fb2; }
+  else if (r.mg === 'pressao') { r.press = 0; r.enchendo = false; novaFaixaMec(r, vm * fb2 * fb2); }
   else if (r.mg === 'fios') { novaSeqMec(r, 4); }
   m.reparo = r; SFX.reparo();
 }
@@ -3172,15 +3230,15 @@ function fioMec(i) {                                           // input do mini-
 function finalizarReparoMec() {
   const m = G.mec, r = m.reparo, q = r.maq, d = r.def;
   if (r.emerg) { const pe = Math.round(PECA(d.peca).preco * m.pecaMul * CFG.MEC_EMERG_MULT);
-    m.grana -= pe; m.custoPecas += pe; }
+    m.grana -= pe; m.custoPecas += pe; m.custoDia += pe; }
   else if (!(m.economiza && Math.random() < 0.15)) { m.pecas[d.peca] = Math.max(0, (m.pecas[d.peca] || 0) - 1); }
   q.estado = 'ok'; q.defeito = null; m.reparo = null; m.manutencoes++;
-  if (q.expresso > 0) { m.grana += 350; m.bonusTotal += 350; q.expresso = 0;
+  if (q.expresso > 0) { m.grana += 350; m.bonusTotal += 350; m.bonusDia += 350; q.expresso = 0;
     flut(q.x, q.y - 66, '📻 EXPRESSO +R$350!', '#ffb03a'); SFX.vendona(); }
   q.grave = false; q.tQuebra = 0;
   if (r.erros === 0) { m.streak++;
     const b = 60 * Math.min(m.streak, 5);
-    m.grana += b; m.bonusTotal += b;
+    m.grana += b; m.bonusTotal += b; m.bonusDia += b;
     flut(q.x, q.y - 82, '⭐ IMPECÁVEL x' + m.streak + '  +R$' + b, '#ffd94d');
     anel(q.x, q.y, 10, 70, 0.4, '#ffd94d', 4);
   } else m.streak = 0;
@@ -3188,15 +3246,20 @@ function finalizarReparoMec() {
   part(q.x, q.y, { vx: [-90, 90], vy: [-120, 20], vida: [.3, .7], tam: [2, 4],
     cores: ['#8fe36a', '#ffd94d', '#fff'], grav: 200, n: 16 });
 }
-function fimMecanico() {
+function fimMecanico(lucroDia) {
   const m = G.mec; if (m.fim) return;
-  m.fim = true; m.fimT = 0; jog.movendo = false; SFX.fim();
+  m.fim = true; m.fimT = 0; m.tela = 'campo'; m.reparo = null; m.depot = false; m.dronePainel = false;
+  jog.movendo = false; SFX.fim();
+  m.lucroFalho = lucroDia !== undefined ? lucroDia : null;
+  m.diasOk = m.dia - 1;
   const liq = Math.floor(m.grana);
-  if (liq > m.recorde) { m.recorde = liq; m.novoRec = true;
-    try { localStorage.setItem(CFG.CHAVE_MEC, liq); } catch (e) {} }
-  const ent = { n: G.nomeJogador || 'OPERADOR', g: liq, mn: m.manutencoes, t: Date.now() };
+  m.novoRec = false;
+  if (m.diasOk > (m.recordeDias || 0)) { m.recordeDias = m.diasOk; m.novoRec = true;
+    try { localStorage.setItem(CFG.CHAVE_MEC + '_dias', m.diasOk); } catch (e) {} }
+  try { localStorage.setItem(CFG.CHAVE_MEC, Math.max(liq, Number(localStorage.getItem(CFG.CHAVE_MEC)) || 0)); } catch (e) {}
+  const ent = { n: G.nomeJogador || 'OPERADOR', d: m.diasOk, g: liq, mn: m.manutencoes, t: Date.now() };
   let lista = []; try { lista = JSON.parse(localStorage.getItem(CFG.CHAVE_MEC + '_lista') || '[]'); } catch (e) {}
-  lista.push(ent); lista.sort((a, b) => b.g - a.g); lista = lista.slice(0, 8);
+  lista.push(ent); lista.sort((a, b) => (b.d || 0) - (a.d || 0) || b.g - a.g); lista = lista.slice(0, 8);
   try { localStorage.setItem(CFG.CHAVE_MEC + '_lista', JSON.stringify(lista)); } catch (e) {}
   m._rank = lista; m._rankT = ent.t;
 }
@@ -3206,11 +3269,11 @@ function relogioMec(dt) {
   const dh = dt * CFG.MIN_POR_SEG / 60;                       // horas de jogo passadas
   const fator = (m.evento && m.evento.id === 'pico') ? 2 : 1;
   for (const q of m.maquinas) {
-    if (q.estado === 'ok' || q.estado === 'alerta') { m.grana += q.vh * dh * fator; m.producao += q.vh * dh * fator; }
+    if (q.estado === 'ok' || q.estado === 'alerta') { m.grana += q.vh * dh * fator; m.producao += q.vh * dh * fator; m.prodDia += q.vh * dh * fator; }
     else { m.perdaParada += q.vh * dh * fator * (q.grave ? 1.5 : 1); q.alertaT += dt; }
   }
   if (!m.aviso21 && G.hora >= 21 * 60) { m.aviso21 = true; toast('⏰ 21:00 — última hora do turno!', 3); SFX.alarme(); }
-  if (G.hora >= CFG.HORA_FIM) { G.hora = CFG.HORA_FIM; fimMecanico(); }
+  if (G.hora >= CFG.HORA_FIM) { G.hora = CFG.HORA_FIM; fimDoDiaMec(); }
 }
 function atualizarMecanico(dt) {
   const m = G.mec; if (!m) return;
@@ -3220,9 +3283,9 @@ function atualizarMecanico(dt) {
   if (!m.reparo && !m.depot) {
     m.proxQuebra -= dt;
     if (m.proxQuebra <= 0) { quebrarMaquina();
-      m.proxQuebra = Math.max(6, rand(11, 19) - m.t * 0.02); }
+      m.proxQuebra = Math.max(4.5, rand(11, 19) - m.t * 0.02 - difMec().quebraRed); }
     m.proxEvento -= dt;
-    if (m.proxEvento <= 0) { sortearEventoMec(); m.proxEvento = rand(50, 75); }
+    if (m.proxEvento <= 0) { sortearEventoMec(); m.proxEvento = Math.max(26, rand(50, 75) - difMec().evRed); }
   }
   if (m.evento) { m.evento.t -= dt; if (m.evento.t <= 0) { m.evento = null;
     m.banner = { txt: '📉 fim do pico de moagem', t: 2.2, cor: '#9fb8a8' }; } }
@@ -3233,7 +3296,7 @@ function atualizarMecanico(dt) {
         m.banner = m.banner || { txt: '🚨 ' + q.nome + ' quebrou — alerta ignorado!', t: 2.6, cor: '#ff8f80' }; } }
     else if (q.estado === 'quebrada') { q.tQuebra = (q.tQuebra || 0) + dt;
       if (q.expresso > 0) { q.expresso -= dt; if (q.expresso <= 0) q.expresso = 0; }
-      if (!q.grave && q.tQuebra > 26) { q.grave = true; SFX.multa();
+      if (!q.grave && q.tQuebra > difMec().graveT) { q.grave = true; SFX.multa();
         m.banner = { txt: '🆘 ' + q.nome + ' AGRAVOU — perda 1.5× e reparo maior!', t: 3, cor: '#ff6a5e' }; } }
   }
   for (const q of m.maquinas) {
@@ -3578,7 +3641,15 @@ function desenharMecHUD() {
   ctx.fillStyle = tarde && Math.floor(G.t * 4) % 2 === 0 ? '#ff5a4a' : '#eef2e0';
   ctx.fillText(hhmm(G.hora), W / 2, grande ? 40 : 34);
   ctx.font = '700 10px "Courier New", monospace'; ctx.fillStyle = '#9fb8a8';
-  ctx.fillText((escuridaoMec() > 0.2 ? '🌙 ' : '') + 'fim às 22:00', W / 2, grande ? 56 : 48);
+  ctx.fillText((escuridaoMec() > 0.2 ? '🌙 ' : '') + 'DIA ' + m.dia + ' · fim 22:00', W / 2, grande ? 56 : 48);
+  { const lucro = m.prodDia + m.bonusDia - m.custoDia, frac = clamp(lucro / m.metaDia, 0, 1);
+    const bw = grande ? 260 : 220, bx = W / 2 - bw / 2, by = grande ? 62 : 54;
+    ctx.fillStyle = 'rgba(0,0,0,.45)'; rr(bx, by, bw, 9, 5); ctx.fill();
+    ctx.fillStyle = frac >= 1 ? '#7fe36a' : lucro < 0 ? '#ff5a4a' : '#ffd94d';
+    if (frac > 0.01) { rr(bx + 1, by + 1, (bw - 2) * frac, 7, 4); ctx.fill(); }
+    ctx.strokeStyle = 'rgba(220,230,238,.3)'; ctx.lineWidth = 1; rr(bx, by, bw, 9, 5); ctx.stroke();
+    ctx.fillStyle = frac >= 1 ? '#7fe36a' : '#cfe0b8'; ctx.font = '700 10px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText((frac >= 1 ? '✅ META! ' : 'meta ') + $(Math.floor(lucro)) + ' / ' + $(m.metaDia), W / 2, by + 20); ctx.textAlign = 'left'; }
   // grana
   ctx.textAlign = 'left'; ctx.fillStyle = '#ffd94d'; ctx.font = '800 ' + (grande ? 24 : 20) + 'px "Courier New", monospace';
   ctx.fillText('R$ ' + Math.floor(m.grana), 16, grande ? 40 : 34);
@@ -3587,7 +3658,7 @@ function desenharMecHUD() {
   ctx.fillText('+R$' + Math.round(taxa * (pico2 ? 2 : 1)) + '/h rodando', 16, grande ? 56 : 48);
   if (pico2 && Math.floor(G.t * 3) % 2 === 0) { ctx.fillStyle = '#ffd94d'; ctx.font = '800 13px "Courier New", monospace';
     ctx.fillText('×2 📈 ' + Math.ceil(m.evento.t) + 's', 16 + 128, grande ? 56 : 48); }
-  { const dw = 84, dx2 = 172, dy2 = grande ? 26 : 20, pct = m.diesel / CFG.MEC_TANQUE;   // diesel
+  { const dw = 84, dx2 = 172, dy2 = grande ? 26 : 20, pct = m.diesel / m.maxTanque;   // diesel
     const baixo = pct < 0.25, pisca = baixo && Math.floor(G.t * 4) % 2 === 0;
     ctx.font = (grande ? 16 : 14) + 'px "Segoe UI", sans-serif';
     ctx.fillStyle = pisca ? '#ff5a4a' : '#cfe0e8'; ctx.fillText('⛽', dx2 - 20, dy2 + 11);
@@ -3769,10 +3840,10 @@ function desenharMecReparo() {
 }
 
 function abastecerMec() {
-  const m = G.mec, custo = Math.ceil((CFG.MEC_TANQUE - m.diesel) * CFG.MEC_DIESEL_PRECO);
+  const m = G.mec, custo = Math.ceil((m.maxTanque - m.diesel) * CFG.MEC_DIESEL_PRECO);
   if (custo <= 0) { toast('⛽ Tanque já está cheio'); return; }
   if (m.grana < custo) { toast('💰 Sem grana pro diesel (R$' + custo + ')'); SFX.multa(); return; }
-  m.grana -= custo; m.custoDiesel += custo; m.diesel = CFG.MEC_TANQUE;
+  m.grana -= custo; m.custoDiesel += custo; m.custoDia += custo; m.diesel = m.maxTanque;
   flut(jog.x, jog.y - 40, '⛽ tanque cheio', '#8fd6e8'); SFX.diesel();
 }
 function desenharMecDronePainel() {
@@ -3784,7 +3855,7 @@ function desenharMecDronePainel() {
   ctx.fillStyle = '#9fb8c4'; ctx.font = '700 11px "Courier New", monospace';
   ctx.fillText('a peça voa da usina até você · taxa 1.4×', W / 2, y + 58);
   MEC_PECAS.forEach((p, i) => {
-    const Y = y + 74 + i * 40, pc = Math.round(p.preco * m.pecaMul * CFG.MEC_DRONE_TAXA), qt = m.pecas[p.id] || 0;
+    const Y = y + 74 + i * 40, pc = Math.round(p.preco * m.pecaMul * ([CFG.MEC_DRONE_TAXA, 1.25, 1.1][m.up.droneCt] || 1.1)), qt = m.pecas[p.id] || 0;
     ctx.font = '18px "Segoe UI", sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText(p.icone, x + 40, Y + 20);
     ctx.textAlign = 'left'; ctx.fillStyle = '#eef2e0'; ctx.font = '700 12px "Courier New", monospace';
     ctx.fillText((i + 1) + '. ' + p.nome, x + 62, Y + 18);
@@ -3842,7 +3913,7 @@ function desenharMecDepot() {
     ctx.fillStyle = on ? '#9fe36a' : '#cfe0e8'; ctx.font = '700 10px "Courier New", monospace'; ctx.textAlign = 'left';
     ctx.fillText(f.nome.slice(0, 12), x + 474, Y + 20); ctx.textAlign = 'left';
     botoesTela.push({ x: x + 440, y: Y, w: 130, h: 32, cb: () => toggleFerr(f.id) }); });
-  { const custo = Math.ceil((CFG.MEC_TANQUE - m.diesel) * CFG.MEC_DIESEL_PRECO), Y = y + 100 + 4 * 40 + 8;
+  { const custo = Math.ceil((m.maxTanque - m.diesel) * CFG.MEC_DIESEL_PRECO), Y = y + 100 + 4 * 40 + 8;
     rr(x + 440, Y, 130, 34, 7); ctx.fillStyle = custo > 0 && m.grana >= custo ? '#7a5a1e' : 'rgba(50,50,50,.5)'; ctx.fill();
     ctx.strokeStyle = '#f0c814'; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.fillStyle = '#ffe9a0'; ctx.font = '700 11px "Courier New", monospace'; ctx.textAlign = 'center';
@@ -3857,49 +3928,132 @@ function desenharMecDepot() {
   ctx.textAlign = 'left';
 }
 
+function desenharMecResumo() {
+  const m = G.mec, R2 = m.resumo;
+  mecFundo();
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#7fe36a'; ctx.font = '800 30px "Segoe UI", sans-serif';
+  ctx.fillText('✅ DIA ' + R2.dia + ' CONCLUÍDO!', W / 2, 60);
+  ctx.fillStyle = '#9fb8c4'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('meta batida — a usina segue rodando graças a você', W / 2, 82);
+  // resumo do dia
+  const linhas = [
+    ['🏭 Produção do dia', '+' + $(Math.floor(m.prodDia)), '#7fd47f'],
+    ['⭐ Bônus de serviço', '+' + $(Math.floor(m.bonusDia)), '#ffd94d'],
+    ['🧰 Custos do dia (peças/diesel/drones)', '-' + $(Math.floor(m.custoDia)), '#ff9a5e'],
+  ];
+  const bx = W / 2 - 240;
+  linhas.forEach((l, i) => { const Y = 128 + i * 30;
+    ctx.textAlign = 'left'; ctx.fillStyle = '#cfe0e8'; ctx.font = '700 14px "Courier New", monospace'; ctx.fillText(l[0], bx, Y);
+    ctx.textAlign = 'right'; ctx.fillStyle = l[2]; ctx.fillText(l[1], bx + 480, Y); });
+  ctx.strokeStyle = 'rgba(200,215,225,.25)'; ctx.beginPath(); ctx.moveTo(bx, 232); ctx.lineTo(bx + 480, 232); ctx.stroke();
+  ctx.textAlign = 'left'; ctx.fillStyle = '#eef2e0'; ctx.font = '800 16px "Courier New", monospace'; ctx.fillText('LUCRO DO DIA', bx, 258);
+  ctx.textAlign = 'right'; ctx.fillStyle = '#7fe36a'; ctx.font = '800 18px "Courier New", monospace'; ctx.fillText($(R2.lucro), bx + 480, 258);
+  ctx.textAlign = 'left'; ctx.fillStyle = '#9fb8a8'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('meta era ' + $(R2.meta) + '  ·  sobra ' + $(R2.lucro - R2.meta), bx, 278);
+  // caixa acumulado + próxima meta
+  ctx.textAlign = 'center'; ctx.fillStyle = '#ffd94d'; ctx.font = '800 15px "Courier New", monospace';
+  ctx.fillText('💰 CAIXA PARA A LOJA: ' + $(Math.floor(m.grana)), W / 2, 312);
+  ctx.fillStyle = '#ff9a5e'; ctx.font = '700 12px "Courier New", monospace';
+  const proxMeta = CFG.MEC_META_BASE + CFG.MEC_META_INC * m.dia;
+  let av = '📈 amanhã (Dia ' + (m.dia + 1) + '): meta sobe para ' + $(proxMeta);
+  if (m.dia + 1 === 3) av += '  ·  🚜 nova máquina na frota!';
+  if (m.dia + 1 === 5) av += '  ·  🚜 frota completa (8)!';
+  ctx.fillText(av, W / 2, 334);
+  // botões
+  chip(W / 2 - 250, H - 66, 240, 40, '🛒 LOJA DA OFICINA', null, true, () => { m.tela = 'loja'; });
+  chip(W / 2 + 10, H - 66, 240, 40, '▶ COMEÇAR DIA ' + (m.dia + 1), null, true, proximoDiaMec);
+  ctx.textAlign = 'left';
+}
+
+function desenharMecLoja() {
+  const m = G.mec;
+  mecFundo();
+  ctx.textAlign = 'center'; ctx.fillStyle = '#ffd94d'; ctx.font = '800 28px "Segoe UI", sans-serif';
+  ctx.fillText('🛒 LOJA DA OFICINA', W / 2, 50);
+  ctx.fillStyle = '#ffd94d'; ctx.font = '800 20px "Courier New", monospace';
+  ctx.fillText('💰 ' + $(Math.floor(m.grana)), W / 2, 78);
+  ctx.fillStyle = '#9fb8c4'; ctx.font = '700 11px "Courier New", monospace';
+  ctx.fillText('melhorias PERMANENTES para toda a carreira', W / 2, 96);
+  const cols = 3, cw = 288, gap = 16, ch = 138, x0 = W / 2 - (cw * cols + gap * (cols - 1)) / 2;
+  MEC_UPGRADES.forEach((u, i) => {
+    const col = i % cols, row = (i / cols) | 0, X = x0 + col * (cw + gap), Y = 118 + row * (ch + 14);
+    const nv = m.up[u.id], mx2 = u.max, cheio = nv >= mx2, pc = cheio ? 0 : u.precos[nv];
+    const pode = !cheio && m.grana >= pc;
+    rr(X, Y, cw, ch, 12); ctx.fillStyle = 'rgba(14,22,30,.9)'; ctx.fill();
+    rr(X + 1, Y + 1, cw - 2, ch - 2, 11); ctx.strokeStyle = cheio ? '#5fbf6a' : pode ? '#8fd6e8' : '#3d5a6a'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.textAlign = 'left'; ctx.font = '30px "Segoe UI", sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText(u.icone, X + 18, Y + 42);
+    ctx.fillStyle = '#eef2e0'; ctx.font = '800 15px "Courier New", monospace'; ctx.fillText(u.nome, X + 60, Y + 30);
+    ctx.fillStyle = '#9fb8a8'; ctx.font = '11px "Courier New", monospace'; ctx.fillText(u.desc, X + 60, Y + 48);
+    // pips de nível
+    for (let k = 0; k < mx2; k++) { ctx.fillStyle = k < nv ? '#ffd94d' : 'rgba(255,255,255,.18)';
+      ctx.beginPath(); ctx.arc(X + 20 + k * 16, Y + 70, 5, 0, 7); ctx.fill(); }
+    ctx.fillStyle = '#8fb8a8'; ctx.font = '700 10px "Courier New", monospace'; ctx.fillText('nível ' + nv + '/' + mx2, X + 20 + mx2 * 16 + 8, Y + 74);
+    // botão comprar
+    const by = Y + ch - 40, bw = cw - 36, bxb = X + 18;
+    rr(bxb, by, bw, 30, 8);
+    ctx.fillStyle = cheio ? 'rgba(50,90,60,.5)' : pode ? '#2e6b9c' : 'rgba(60,60,60,.5)'; ctx.fill();
+    ctx.fillStyle = cheio ? '#8fe0a0' : pode ? '#dff0fa' : '#7a7a7a'; ctx.font = '800 13px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText(cheio ? '✔ MÁXIMO' : 'COMPRAR — ' + $(pc), bxb + bw / 2, by + 20);
+    if (!cheio) botoesTela.push({ x: bxb, y: by, w: bw, h: 30, cb: () => comprarUpgradeMec(u.id) });
+    ctx.textAlign = 'left';
+  });
+  const bw2 = 300, bx2 = W / 2 - bw2 / 2;
+  rr(bx2, H - 48, bw2, 34, 9); ctx.fillStyle = '#7cc85a'; ctx.fill();
+  ctx.fillStyle = '#0e1508'; ctx.font = '800 15px "Courier New", monospace'; ctx.textAlign = 'center';
+  ctx.fillText('▶ COMEÇAR DIA ' + (m.dia + 1), W / 2, H - 26);
+  botoesTela.push({ x: bx2, y: H - 48, w: bw2, h: 34, cb: proximoDiaMec });
+  ctx.textAlign = 'left';
+}
+
 function desenharMecFim() {
   const m = G.mec;
-  ctx.fillStyle = 'rgba(8,16,22,.85)'; ctx.fillRect(0, 0, W, H);
-  const { x, y } = painel(600, 440);
-  ctx.textAlign = 'center'; ctx.fillStyle = '#ffd94d'; ctx.font = '800 28px "Segoe UI", sans-serif';
-  ctx.fillText('🔧 FIM DO TURNO', W / 2, y + 44);
+  ctx.fillStyle = 'rgba(8,16,22,.9)'; ctx.fillRect(0, 0, W, H);
+  const { x, y } = painel(600, 452);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ff6a5e'; ctx.font = '800 28px "Segoe UI", sans-serif';
+  ctx.fillText('🏁 FIM DE CARREIRA', W / 2, y + 44);
   ctx.fillStyle = '#9fb8a8'; ctx.font = '700 12px "Courier New", monospace';
-  ctx.fillText('Mecânico ' + (G.nomeJogador || 'OPERADOR') + ' · ' + (m.talento ? m.talento.nome : ''), W / 2, y + 68);
-  ctx.fillStyle = Math.floor(m.grana) >= 0 ? '#7fe36a' : '#ff6a5e'; ctx.font = '800 50px "Courier New", monospace';
-  ctx.fillText('R$ ' + Math.floor(m.grana), W / 2, y + 128);
+  const motivo = m.lucroFalho != null
+    ? ('Dia ' + m.dia + ': lucro ' + $(m.lucroFalho) + ' não bateu a meta ' + $(m.metaDia))
+    : 'turno encerrado';
+  ctx.fillText(motivo, W / 2, y + 68);
+  // dias sobrevividos (destaque)
+  ctx.fillStyle = '#ffd94d'; ctx.font = '800 54px "Courier New", monospace';
+  ctx.fillText(m.diasOk + (m.diasOk === 1 ? ' DIA' : ' DIAS'), W / 2, y + 128);
   ctx.fillStyle = '#9fb8a8'; ctx.font = '700 11px "Courier New", monospace';
-  ctx.fillText('CAIXA FINAL (seu placar)', W / 2, y + 148);
-  // stats: ganhos e perdas
+  ctx.fillText('mantendo a safra viva como ' + (m.talento ? m.talento.nome : 'mecânico'), W / 2, y + 148);
   const linhas = [
-    ['🏭 Produção das máquinas', '+R$' + Math.floor(m.producao), '#7fd47f'],
-    ['⭐ Bônus de serviço', '+R$' + Math.floor(m.bonusTotal || 0), '#ffd94d'],
-    ['🧰 Gasto com peças e drones', '-R$' + Math.floor(m.custoPecas), '#ff9a5e'],
-    ['⛽ Diesel e resgates', '-R$' + Math.floor(m.custoDiesel), '#ffb87a'],
-    ['⏱️ Perdido em paradas', '-R$' + Math.floor(m.perdaParada), '#ff7a5e'],
-    ['🔧 ' + m.manutencoes + ' manutenções  ·  ⚠️ ' + m.quebrasTot + ' quebras', '', '#8fd6e8'],
+    ['💰 Caixa final', $(Math.floor(m.grana)), '#7fd47f'],
+    ['🔧 Manutenções na carreira', '' + m.manutencoes, '#8fd6e8'],
+    ['⭐ Bônus de serviço totais', '+' + $(Math.floor(m.bonusTotal || 0)), '#ffd94d'],
+    ['⚠️ Quebras enfrentadas', '' + m.quebrasTot, '#cfe0b8'],
   ];
-  linhas.forEach((l, i) => { const Y = y + 174 + i * 24;
+  linhas.forEach((l, i) => { const Y = y + 178 + i * 26;
     ctx.textAlign = 'left'; ctx.fillStyle = '#cfe0e8'; ctx.font = '700 13px "Courier New", monospace'; ctx.fillText(l[0], x + 40, Y);
     ctx.textAlign = 'right'; ctx.fillStyle = l[2]; ctx.fillText(l[1], x + 560 - 40, Y); });
   ctx.textAlign = 'center'; ctx.fillStyle = m.novoRec ? '#ffd94d' : '#9fb8a8'; ctx.font = '700 13px "Courier New", monospace';
-  ctx.fillText(m.novoRec ? '✨ NOVO RECORDE DE CAIXA! ✨' : ('Recorde: R$ ' + m.recorde), W / 2, y + 322);
-  // ranking curto
+  ctx.fillText(m.novoRec ? '✨ NOVO RECORDE: ' + m.diasOk + ' DIAS! ✨' : ('Recorde: ' + (m.recordeDias || 0) + ' dias'), W / 2, y + 296);
+  // ranking por dias
   const rank = m._rank || [];
-  ctx.fillStyle = '#ffd94d'; ctx.font = '700 12px "Courier New", monospace'; ctx.fillText('🏅 MELHORES CAIXAS', W / 2, y + 344);
+  ctx.fillStyle = '#ffd94d'; ctx.font = '700 12px "Courier New", monospace'; ctx.fillText('🏅 CARREIRAS LENDÁRIAS', W / 2, y + 322);
   ctx.font = '11px "Courier New", monospace';
   rank.slice(0, 3).forEach((e, i) => { const meu = e.t === m._rankT;
     ctx.fillStyle = meu ? '#ffd94d' : '#cfe0b8';
-    ctx.fillText((i + 1) + 'º ' + e.n + '  R$' + e.g + '  (' + e.mn + ' manut.)', W / 2, y + 360 + i * 15); });
+    ctx.fillText((i + 1) + 'º ' + e.n + '  ' + (e.d || 0) + ' dias  ·  ' + $(e.g), W / 2, y + 342 + i * 16); });
   if (m.fimT > 0.5) {
-    chip(x + 40, y + 440 - 44, 240, 34, '🔄 JOGAR DE NOVO', null, true, iniciarMecanico);
-    chip(x + 320, y + 440 - 44, 240, 34, '🏠 VOLTAR AO MENU', null, true, () => { G.fase = 'menu'; });
+    chip(x + 40, y + 452 - 44, 240, 34, '🔄 NOVA CARREIRA', null, true, iniciarMecanico);
+    chip(x + 320, y + 452 - 44, 240, 34, '🏠 VOLTAR AO MENU', null, true, () => { G.fase = 'menu'; });
   }
+  ctx.textAlign = 'left';
 }
 
 function renderMecanico() {
   const m = G.mec;
   if (m.tela === 'selecao') return desenharMecSelecao();
   if (m.tela === 'kit') return desenharMecKit();
+  if (m.tela === 'resumo') return desenharMecResumo();
+  if (m.tela === 'loja') return desenharMecLoja();
   renderMecCampo();
   desenharMecHUD();
   if (m.dronePainel && !m.reparo && !m.depot && !m.fim) desenharMecDronePainel();
@@ -5413,6 +5567,10 @@ const AJUDA_PAGS = [
     '📈 Eventos: pico 2×, tempestade ⚡ e expresso 📻 (+R$350).',
     '🔥 Reparo sem erro = combo IMPECÁVEL (bônus). 💨 SHIFT = turbo',
     '(1.55× mais rápido, 3× mais diesel). 📯 B = buzina!',
+    '📅 CARREIRA: cada dia tem META DE LUCRO (sobe todo dia). Bateu',
+    '→ resumo + 🛒 LOJA de upgrades permanentes → dia seguinte, mais',
+    'difícil (mais panes, menos alertas, nova máquina na frota).',
+    'Não bateu a meta = fim de carreira. Placar = DIAS sobrevividos!',
   ]},
   { t: '🏁 CAMPANHA & RANKING', l: [
     'A safra é a CAMPANHA que você escolheu (1 a 5 dias). Bata a',
@@ -5659,6 +5817,9 @@ window.addEventListener('keydown', e => {
   }
   if (G.fase === 'mecanico') {
     const m = G.mec;
+    if (m.tela === 'resumo') { if (e.code === 'Space' || e.code === 'Enter') proximoDiaMec();
+                                else if (e.code === 'KeyL') m.tela = 'loja'; return; }
+    if (m.tela === 'loja') { if (e.code === 'Space' || e.code === 'Enter') proximoDiaMec(); return; }
     if (m.tela !== 'campo') return;              // seleção/kit por clique
     if (m.fim) { if ((e.code === 'Space' || e.code === 'Enter') && m.fimT > 0.5) iniciarMecanico();
                  else if (e.code === 'Escape') G.fase = 'menu'; return; }
@@ -5860,6 +6021,7 @@ globalThis.__T = {
          atualizarMecanico, fimMecanico, iniciarReparoMec, comprarPecaKit, toggleFerr,
          fioMec, pedirDrone, abastecerMec, atualizarDronesMec,
          preventivaMec, panerMaquina, sortearEventoMec, buzinarMec,
+         fimDoDiaMec, proximoDiaMec, comprarUpgradeMec, difMec, MEC_UPGRADES,
          MEC_DEFEITOS, MEC_PECAS, MEC_FERRAMENTAS, MEC_TALENTOS,
          iniciarSurvivor, atualizarSurvivor, criarInimigo, criarBoss, ganharXP,
          abrirEscolha, escolherMelhoria, fimSurvivor, spawnInimigo,
