@@ -215,6 +215,7 @@ const CFG = {
   MEC_GRANA_INI: 1500, MEC_EMERG_MULT: 1.8, MEC_VEL: 190, CHAVE_MEC: 'canaTycoon_mecRank',
   MEC_TANQUE: 100, MEC_CONSUMO: 1.05, MEC_DIESEL_PRECO: 3, MEC_RESGATE: 350, MEC_DRONE_TAXA: 1.4,
   MEC_META_BASE: 10000, MEC_META_INC: 3500,
+  DM_VEL: 3.1, DM_FOV: 0.72, DM_HP: 100, DM_MUN: 24, CHAVE_DM: 'canaTycoon_doomRec',
   CHAVE_SURV: 'canaTycoon_survRec',
   CHAVE_DIAS: 'canaTycoon_dias',
   PLANTIO_MIN_POR_SEG: 8,            // plantio: 24h de jogo em 3 min reais
@@ -1404,6 +1405,7 @@ function update(dt) {
     if (rastros[i].t > 7) rastros.splice(i, 1);
   }
 
+  if (G.fase === 'doom') { atualizarDoom(dt); return; }
   if (G.fase === 'mecanico') { atualizarMecanico(dt); motorSom(jog.movendo ? 0.4 : 0, jog.movendo); chuvaSom(false); return; }
   if (G.fase === 'survivor') { atualizarSurvivor(dt); motorSom(jog.movendo ? 0.5 : 0, jog.movendo); chuvaSom(false); return; }
   if (G.fase === 'fim') { G.fimT += dt; motorSom(0, false); chuvaSom(false); return; }
@@ -2937,6 +2939,733 @@ const FERR = id => MEC_FERRAMENTAS.find(f => f.id === id);
 const PECA = id => MEC_PECAS.find(p => p.id === id);
 const DEF = id => MEC_DEFEITOS.find(d => d.id === id);
 
+/* ═══════════════════════ MODO PESADELO NO CANAVIAL (raycaster estilo Doom) ═══
+   Labirinto de cana em 1ª pessoa: colete as 3 peças e fuja pelo portão da usina,
+   enfrentando pragas gigantes e um alien no corredor do canavial. */
+
+const DM_MAPA = [
+  "1111111111111111111111",
+  "1000000000010000000031",
+  "1011111110110111111101",
+  "1010000010000010000101",
+  "1010111011111010110101",
+  "10100010000000P0010001",
+  "1010101111121111010111",
+  "1000101000000010010001",
+  "1110101011111010011101",
+  "1000001010002010000021",
+  "1011111010111011111101",
+  "1010000010000000000101",
+  "1010113111111111110101",
+  "1010000000010000010001",
+  "1011111110110101111101",
+  "1000000010100100000001",
+  "1111101010111111101101",
+  "1000101010000000101001",
+  "1010101111111110101011",
+  "1010000000000030001001",
+  "1000111111111111111G01",
+  "1111111111111111111111",
+];
+const DM_W = DM_MAPA[0].length, DM_H = DM_MAPA.length;
+let DM_TEX = null, DM_FOLHAS = null;                             // texturas de parede + folhas (canvas)
+function dmCel(x, y) {
+  if (x < 0 || y < 0 || x >= DM_W || y >= DM_H) return '1';
+  return DM_MAPA[y | 0][x | 0];
+}
+function dmSolido(x, y) { const c = dmCel(x, y); return c === '1' || (c === 'G' && !(G.dm && G.dm.portao)); }
+
+function construirTexturasDoom() {
+  DM_TEX = {};
+  const S2 = 128;                                               // textura maior = mais detalhe
+  // ── PAREDE DE CANA ALTA (colmos com brilho, folhas secas, gomos) ──
+  for (const [nome, base, claro, escuro, no, leaf] of [
+    ['cana',    '#356420', '#6fb03e', '#1f4614', '#e8c838', '#7ec24a'],
+    ['canaEsc', '#2b521a', '#5c9432', '#183a0f', '#c9a020', '#5f9a38']]) {
+    const [c, cc] = offscreen(S2, S2);
+    // fundo em degradê vertical (base mais escura, topo verde)
+    const g = cc.createLinearGradient(0, 0, 0, S2);
+    g.addColorStop(0, claro); g.addColorStop(0.5, base); g.addColorStop(1, escuro);
+    cc.fillStyle = g; cc.fillRect(0, 0, S2, S2);
+    // colmos verticais com espessura variável + brilho especular
+    let x = 2;
+    while (x < S2) {
+      const w = 6 + ((x * 7) % 5);
+      const lg = cc.createLinearGradient(x, 0, x + w, 0);
+      lg.addColorStop(0, escuro); lg.addColorStop(0.35, base);
+      lg.addColorStop(0.5, claro); lg.addColorStop(0.65, base); lg.addColorStop(1, escuro);
+      cc.fillStyle = lg; cc.fillRect(x, 0, w, S2);
+      cc.fillStyle = 'rgba(255,255,255,.14)'; cc.fillRect(x + w * 0.42, 0, 1.5, S2);   // reflexo
+      cc.fillStyle = 'rgba(0,0,0,.22)'; cc.fillRect(x + w, 0, 2, S2);                  // sombra entre colmos
+      x += w + 2;
+    }
+    // gomos/nós horizontais (anéis do colmo)
+    for (let k = 0; k < 7; k++) { const yy = 6 + k * 18 + ((k * 5) % 4);
+      cc.fillStyle = no; cc.fillRect(0, yy, S2, 3);
+      cc.fillStyle = 'rgba(255,255,255,.12)'; cc.fillRect(0, yy - 1, S2, 1);
+      cc.fillStyle = 'rgba(0,0,0,.28)'; cc.fillRect(0, yy + 3, S2, 2);
+    }
+    // folhas finas brotando dos nós (estáticas, dão textura orgânica)
+    for (let k = 0; k < 22; k++) {
+      const lx = (k * 53) % S2, ly = 10 + ((k * 37) % (S2 - 20)), dir = k % 2 ? 1 : -1;
+      cc.strokeStyle = k % 3 ? leaf : escuro; cc.lineWidth = 1.6; cc.globalAlpha = 0.5;
+      cc.beginPath(); cc.moveTo(lx, ly);
+      cc.quadraticCurveTo(lx + dir * 12, ly - 8, lx + dir * 20, ly - 22); cc.stroke();
+    }
+    cc.globalAlpha = 1;
+    // ruído sutil
+    for (let k = 0; k < 240; k++) { cc.fillStyle = k % 2 ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.06)';
+      cc.fillRect((k * 71) % S2, (k * 91) % S2, 1, 1); }
+    DM_TEX[nome] = c;
+  }
+  // ── PORTÃO DA USINA (metal industrial + faixa de perigo + rebites) ──
+  { const [c, cc] = offscreen(S2, S2);
+    const g = cc.createLinearGradient(0, 0, S2, 0);
+    g.addColorStop(0, '#3a332b'); g.addColorStop(0.5, '#5a4e42'); g.addColorStop(1, '#3a332b');
+    cc.fillStyle = g; cc.fillRect(0, 0, S2, S2);
+    for (let y = 0; y < S2; y += 16) { cc.fillStyle = (y / 16) % 2 ? '#4a4038' : '#332c25'; cc.fillRect(0, y, S2, 16);
+      cc.fillStyle = 'rgba(0,0,0,.3)'; cc.fillRect(0, y + 14, S2, 2); }
+    // faixas de perigo diagonais
+    cc.save(); cc.beginPath(); cc.rect(0, S2 * 0.36, S2, S2 * 0.28); cc.clip();
+    for (let i = -S2; i < S2 * 2; i += 22) { cc.fillStyle = (i / 22) % 2 ? '#f0c814' : '#1a1a1a';
+      cc.beginPath(); cc.moveTo(i, S2); cc.lineTo(i + 22, S2); cc.lineTo(i + 44, 0); cc.lineTo(i + 22, 0); cc.fill(); }
+    cc.restore();
+    // rebites
+    cc.fillStyle = '#6a5e50'; for (let ry = 8; ry < S2; ry += 24) for (let rx = 8; rx < S2; rx += 24) {
+      cc.beginPath(); cc.arc(rx, ry, 2.5, 0, 7); cc.fill(); }
+    cc.fillStyle = '#1a1a1a'; cc.fillRect(0, 0, S2, 4); cc.fillRect(0, S2 - 4, S2, 4);
+    DM_TEX.portao = c; }
+  // ── FOLHAS animadas (billboards sobrepostos nas paredes) — 3 formatos ──
+  DM_FOLHAS = [];
+  for (let v = 0; v < 3; v++) {
+    const fs2 = 40, [c, cc] = offscreen(fs2, fs2);
+    cc.translate(fs2 / 2, fs2);
+    const col = ['#7ec24a', '#5f9a38', '#8fd45a'][v];
+    cc.fillStyle = col; cc.strokeStyle = 'rgba(20,50,12,.6)'; cc.lineWidth = 1;
+    cc.beginPath(); cc.moveTo(0, 0);
+    cc.quadraticCurveTo(-10 - v * 2, -fs2 * 0.5, -3, -fs2 * 0.92);   // lado esq
+    cc.quadraticCurveTo(0, -fs2 * 0.98, 3, -fs2 * 0.92);
+    cc.quadraticCurveTo(10 + v * 2, -fs2 * 0.5, 0, 0);               // lado dir
+    cc.fill(); cc.stroke();
+    cc.strokeStyle = 'rgba(30,70,18,.7)'; cc.lineWidth = 1.4;        // nervura central
+    cc.beginPath(); cc.moveTo(0, -2); cc.lineTo(0, -fs2 * 0.9); cc.stroke();
+    DM_FOLHAS.push(c);
+  }
+}
+
+function iniciarDoom() {
+  if (typeof document !== 'undefined') { const cb = document.getElementById('codigoBox'); if (cb) cb.style.display = 'none'; }
+  const inp = document.getElementById('nome');
+  if (inp) { G.nomeJogador = ((inp.value || '').trim().toUpperCase().slice(0, 12)) || 'MECÂNICO';
+             try { localStorage.setItem(CFG.CHAVE_NOME, G.nomeJogador); } catch (e) {} }
+  if (!DM_TEX) construirTexturasDoom();
+  G.duelo = null; _semRng = null; G.fase = 'doom'; joySurv = null;
+  let rec = 0; try { rec = Number(localStorage.getItem(CFG.CHAVE_DM)) || 0; } catch (e) {}
+  // acha spawn (P) e peças (2) e portão (G)
+  let px = 3, py = 3; const pecas = [], portais = [];
+  for (let y = 0; y < DM_H; y++) for (let x = 0; x < DM_W; x++) {
+    const c = DM_MAPA[y][x];
+    if (c === 'P') { px = x + 0.5; py = y + 0.5; }
+    if (c === '2') pecas.push({ x: x + 0.5, y: y + 0.5, viva: true, fase: Math.random() * 6.28 });
+    if (c === '3') portais.push({ x: x + 0.5, y: y + 0.5 });
+    if (c === 'G') { portais.gx = x + 0.5; portais.gy = y + 0.5; }
+  }
+  G.dm = {
+    px, py, ang: -Math.PI / 2, vx: 0, vy: 0,
+    hp: CFG.DM_HP, mun: CFG.DM_MUN, arma: 'chave', armaT: 0, atirando: 0, bob: 0, flash: 0,
+    pecas, coletadas: 0, portao: false, gx: portais.gx, gy: portais.gy, portais,
+    inimigos: [], projeteis: [], balas: [], sangue: [], particulas: [],
+    t: 0, fim: false, vitoria: false, fimT: 0, recorde: rec, novoRec: false,
+    proxSpawn: 2.5, kills: 0, dano: 0, hurt: 0, msg: null, msgT: 0,
+    joy: null, giroTouch: 0, chaoTex: null,
+  };
+  spawnOndaDoom(6);
+  dmMsg('🔧 Colete as 3 PEÇAS e fuja pelo PORTÃO! Cuidado com as pragas...', 4);
+  G.pausa = false;
+}
+function dmMsg(t, dur) { const d = G.dm; if (!d) return; d.msg = t; d.msgT = dur || 2.5; }
+
+function spawnOndaDoom(n) {
+  const d = G.dm;
+  const tipos = [
+    { id: 'broca', hp: 3, vel: 1.0, r: 0.35, dano: 9, cor: '#c8a032', pts: 1 },
+    { id: 'gafanhoto', hp: 2, vel: 2.1, r: 0.3, dano: 6, cor: '#6fa03a', pts: 1 },
+    { id: 'alien', hp: 5, vel: 1.3, r: 0.38, dano: 12, cor: '#a24ad2', atira: true, pts: 3 },
+  ];
+  let posto = 0, tent = 0;
+  while (posto < n && tent < 200) {
+    tent++;
+    const x = 1 + Math.random() * (DM_W - 2), y = 1 + Math.random() * (DM_H - 2);
+    if (dmSolido(x, y)) continue;
+    const dx = x - d.px, dy = y - d.py; if (dx * dx + dy * dy < 16) continue;   // longe do jogador
+    const base = tipos[Math.random() < 0.22 + d.t / 400 ? 2 : Math.random() < 0.5 ? 0 : 1];
+    d.inimigos.push({ ...base, x, y, hpMax: base.hp, flash: 0, faseA: Math.random() * 6.28, atk: 0, morto: 0 });
+    posto++;
+  }
+}
+
+function dmMover(dt) {
+  const d = G.dm;
+  if (d.fim) return;
+  let av = 0, st = 0, giro = 0;
+  if (kb.fwd) av += 1; if (kb.re) av -= 1;
+  if (kb.esq) giro -= 1; if (kb.dir) giro += 1;            // setas/AD giram
+  if (kb.stL) st -= 1; if (kb.stR) st += 1;                // Q/E strafe
+  if (d.joy && d.joy.ativo) { av -= d.joy.dy; st += d.joy.dx * 0.6; }
+  if (d.giroTouch) { giro += d.giroTouch; d.giroTouch *= 0.6; if (Math.abs(d.giroTouch) < 0.001) d.giroTouch = 0; }
+  d.ang += giro * 2.6 * dt;
+  const co = Math.cos(d.ang), si = Math.sin(d.ang);
+  const vel = CFG.DM_VEL;
+  let mx = (co * av - si * st) * vel * dt, my = (si * av + co * st) * vel * dt;
+  const rr = 0.22;                                          // raio de colisão
+  if (!dmSolido(d.px + mx + Math.sign(mx) * rr, d.py)) d.px += mx; else d.vx = 0;
+  if (!dmSolido(d.px, d.py + my + Math.sign(my) * rr)) d.py += my; else d.vy = 0;
+  const movendo = Math.abs(av) + Math.abs(st) > 0.1;
+  d.bob += dt * (movendo ? 9 : 3);
+  if (movendo && Math.random() < dt * 4) d.particulas.push({   // folhas levantadas
+    sx: rand(0.3, 0.7), sy: rand(0.6, 0.9), t: 0, cor: escolha(['#5fa03a', '#3a6b24']) });
+}
+
+function dmLinhaLivre(x0, y0, x1, y1) {                        // sem parede entre 2 pontos
+  const dx = x1 - x0, dy = y1 - y0, dist = Math.hypot(dx, dy), passos = Math.ceil(dist / 0.1);
+  for (let i = 1; i < passos; i++) if (dmSolido(x0 + dx * i / passos, y0 + dy * i / passos)) return false;
+  return true;
+}
+function dmAtacar() {
+  const d = G.dm; if (d.fim || d.armaT > 0) return;
+  if (d.arma === 'chave') {
+    d.armaT = 0.28; d.atirando = 0.18; SFX.reparo();
+    const alc = 1.2, co = Math.cos(d.ang), si = Math.sin(d.ang);
+    let alvo = null, melhor = alc;
+    for (const e of d.inimigos) { if (e.morto) continue;
+      const dx = e.x - d.px, dy = e.y - d.py, dist = Math.hypot(dx, dy);
+      if (dist > alc + e.r) continue;
+      const dot = (dx * co + dy * si) / (dist || 1);
+      if (dot > 0.55 && dist < melhor + e.r) { melhor = dist; alvo = e; }
+    }
+    if (alvo) dmDano(alvo, 3, co, si);
+    else { for (let k = 0; k < 4; k++) d.particulas.push({ sx: 0.5, sy: 0.62, t: 0, cor: '#cfd6dc' }); }
+  } else {                                                   // pulverizador (escopeta hitscan em leque)
+    if (d.mun <= 0) { SFX.multa(); dmMsg('💨 Sem defensivo! Ache um refil', 1.6); return; }
+    d.mun--; d.armaT = 0.55; d.atirando = 0.3; d.flash = 0.12; SFX.spray(); tremer(0.12);
+    const co = Math.cos(d.ang), si = Math.sin(d.ang);
+    for (const e of d.inimigos) { if (e.morto) continue;
+      const dx = e.x - d.px, dy = e.y - d.py, dist = Math.hypot(dx, dy);
+      if (dist > 5.5) continue;
+      const dot = (dx * co + dy * si) / (dist || 1);
+      if (dot > 0.86 && dmLinhaLivre(d.px, d.py, e.x, e.y)) dmDano(e, 3 + Math.max(0, 4 - dist), co, si);
+    }
+  }
+}
+function dmDano(e, dano, kx, ky) {
+  const d = G.dm;
+  e.hp -= dano; e.flash = 0.12; e.x += kx * 0.12; e.y += ky * 0.12;
+  for (let k = 0; k < 5; k++) d.sangue.push({ x: e.x, y: e.y, vx: rand(-1, 1), vy: rand(-1, 1), t: 0, cor: e.cor });
+  if (e.hp <= 0 && !e.morto) { e.morto = 0.5; d.kills++; d.dano += e.pts; SFX.praga();
+    for (let k = 0; k < 10; k++) d.sangue.push({ x: e.x, y: e.y, vx: rand(-2, 2), vy: rand(-2, 2), t: 0, cor: e.cor }); }
+}
+function dmProjetil(e) {                                       // alien cospe
+  const d = G.dm, dx = d.px - e.x, dy = d.py - e.y, dist = Math.hypot(dx, dy) || 1;
+  d.projeteis.push({ x: e.x, y: e.y, vx: dx / dist * 2.6, vy: dy / dist * 2.6, t: 0 });
+  SFX.spray();
+}
+function atualizarIADoom(dt) {
+  const d = G.dm;
+  for (let i = d.inimigos.length - 1; i >= 0; i--) {
+    const e = d.inimigos[i];
+    if (e.flash > 0) e.flash -= dt;
+    if (e.morto) { e.morto -= dt; if (e.morto <= 0) d.inimigos.splice(i, 1); continue; }
+    e.faseA += dt * (4 + e.vel);
+    const dx = d.px - e.x, dy = d.py - e.y, dist = Math.hypot(dx, dy);
+    const vis = dist < 9 && dmLinhaLivre(e.x, e.y, d.px, d.py);
+    if (vis) {
+      if (dist > (e.atira ? 3.2 : e.r + 0.35)) {             // aproxima
+        const nx = e.x + dx / dist * e.vel * dt, ny = e.y + dy / dist * e.vel * dt;
+        if (!dmSolido(nx, e.y)) e.x = nx; if (!dmSolido(e.x, ny)) e.y = ny;
+      }
+      e.atk -= dt;
+      if (e.atira) { if (e.atk <= 0 && dist < 8) { e.atk = 1.6; dmProjetil(e); } }
+      else if (dist < e.r + 0.5 && e.atk <= 0) { e.atk = 0.9;
+        d.hp -= e.dano; d.hurt = 0.5; tremer(0.18); SFX.colisao();
+        if (d.hp <= 0) { d.hp = 0; dmFim(false); return; }
+      }
+    }
+  }
+  // projéteis do alien
+  for (let i = d.projeteis.length - 1; i >= 0; i--) {
+    const p = d.projeteis[i]; p.x += p.vx * dt; p.y += p.vy * dt; p.t += dt;
+    if (dmSolido(p.x, p.y) || p.t > 4) { d.projeteis.splice(i, 1); continue; }
+    if (dist2(p.x * 10, p.y * 10, d.px * 10, d.py * 10) < 16) {   // acertou o jogador (~0.4)
+      d.projeteis.splice(i, 1); d.hp -= 10; d.hurt = 0.6; d.flash = 0; tremer(0.2); SFX.colisao();
+      if (d.hp <= 0) { d.hp = 0; dmFim(false); return; }
+    }
+  }
+  // sangue/partículas
+  for (let i = d.sangue.length - 1; i >= 0; i--) { const b = d.sangue[i]; b.x += b.vx * dt; b.y += b.vy * dt; b.vx *= .9; b.vy *= .9; b.t += dt; if (b.t > .5) d.sangue.splice(i, 1); }
+  for (let i = d.particulas.length - 1; i >= 0; i--) { d.particulas[i].t += dt; if (d.particulas[i].t > .4) d.particulas.splice(i, 1); }
+  // spawns contínuos (sobe com o tempo)
+  d.proxSpawn -= dt;
+  if (d.proxSpawn <= 0 && d.inimigos.length < 14) { spawnOndaDoom(1 + (d.t / 30 | 0)); d.proxSpawn = Math.max(3, 9 - d.t / 20); }
+}
+function atualizarItensDoom(dt) {
+  const d = G.dm;
+  for (const p of d.pecas) { if (!p.viva) continue; p.fase += dt * 3;
+    if (dist2(p.x * 10, p.y * 10, d.px * 10, d.py * 10) < 36) {   // ~0.6
+      p.viva = false; d.coletadas++; SFX.moeda();
+      for (let k = 0; k < 14; k++) d.sangue.push({ x: p.x, y: p.y, vx: rand(-2, 2), vy: rand(-2, 2), t: 0, cor: '#ffd94d' });
+      if (d.coletadas >= 3) { d.portao = true; dmMsg('✅ 3 peças! O PORTÃO ABRIU — fuja pela usina! 🏭', 4); SFX.recorde(); }
+      else dmMsg('🔧 Peça ' + d.coletadas + '/3 coletada!', 2);
+    }
+  }
+  // refis de defensivo (nos pontos 3 do mapa)
+  for (const r of d.portais) { if (r.usado) continue;
+    if (dist2(r.x * 10, r.y * 10, d.px * 10, d.py * 10) < 36) {
+      if (d.mun < CFG.DM_MUN) { r.usado = true; r.recarga = 12; d.mun = Math.min(CFG.DM_MUN, d.mun + 12);
+        SFX.diesel(); dmMsg('💨 +12 defensivo!', 1.6); }
+    }
+  }
+  for (const r of d.portais) if (r.usado) { r.recarga -= dt; if (r.recarga <= 0) r.usado = false; }
+  // chegou no portão aberto?
+  if (d.portao && d.gx != null && dist2(d.px * 10, d.py * 10, d.gx * 10, d.gy * 10) < 64) dmFim(true);
+}
+function dmFim(vitoria) {
+  const d = G.dm; if (d.fim) return;
+  d.fim = true; d.vitoria = vitoria; d.fimT = 0; SFX[vitoria ? 'vendona' : 'fim']();
+  if (vitoria) { const tempo = Math.floor(d.t);
+    if (!d.recorde || tempo < d.recorde) { d.recorde = tempo; d.novoRec = true;
+      try { localStorage.setItem(CFG.CHAVE_DM, tempo); } catch (e) {} } }
+}
+function trocarArmaDoom() { const d = G.dm; if (d.fim) return; d.arma = d.arma === 'chave' ? 'spray' : 'chave'; SFX.peca(); }
+
+function atualizarDoom(dt) {
+  const d = G.dm; if (!d) return;
+  if (d.fim) { d.fimT += dt; return; }
+  if (G.pausa) return;
+  d.t += dt; d.armaT = Math.max(0, d.armaT - dt); d.atirando = Math.max(0, d.atirando - dt);
+  d.flash = Math.max(0, d.flash - dt); d.hurt = Math.max(0, d.hurt - dt);
+  if (d.msgT > 0) d.msgT -= dt;
+  dmMover(dt); atualizarIADoom(dt); if (d.fim) return; atualizarItensDoom(dt);
+}
+
+function renderDoom() {
+  const d = G.dm; if (!d) return;
+  const cw = W, ch = H, meio = ch / 2;
+  const zbuf = new Float32Array(cw);
+  const dmColsTopo = [];
+  const co = Math.cos(d.ang), si = Math.sin(d.ang);
+  const bobY = Math.sin(d.bob) * 5;
+  // céu (noite roxa de pesadelo) + chão de terra
+  const sky = ctx.createLinearGradient(0, 0, 0, meio);
+  sky.addColorStop(0, '#241033'); sky.addColorStop(1, '#5a3a4a');
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, cw, meio + bobY);
+  const grd = ctx.createLinearGradient(0, meio, 0, ch);
+  grd.addColorStop(0, '#2a1e12'); grd.addColorStop(1, '#4a3620');
+  ctx.fillStyle = grd; ctx.fillRect(0, meio + bobY, cw, ch);
+  // lua
+  ctx.fillStyle = 'rgba(230,210,180,.8)'; ctx.beginPath();
+  const luaX = (cw * 0.7 - (d.ang % (Math.PI * 2)) * cw / 1.4 + cw * 4) % (cw * 2) - cw * 0.5;
+  ctx.arc(luaX, meio * 0.4 + bobY, 30, 0, 7); ctx.fill();
+
+  // ── RAYCAST (DDA) ──
+  const passo = 2;                                             // resolução de colunas
+  for (let col = 0; col < cw; col += passo) {
+    const camX = 2 * col / cw - 1;
+    const rdx = co + (-si) * CFG.DM_FOV * camX, rdy = si + co * CFG.DM_FOV * camX;
+    let mapX = d.px | 0, mapY = d.py | 0;
+    const ddX = Math.abs(1 / (rdx || 1e-9)), ddY = Math.abs(1 / (rdy || 1e-9));
+    let sx, sy, stepX, stepY;
+    if (rdx < 0) { stepX = -1; sx = (d.px - mapX) * ddX; } else { stepX = 1; sx = (mapX + 1 - d.px) * ddX; }
+    if (rdy < 0) { stepY = -1; sy = (d.py - mapY) * ddY; } else { stepY = 1; sy = (mapY + 1 - d.py) * ddY; }
+    let hit = 0, lado = 0, cel = '1', guard = 0;
+    while (!hit && guard++ < 64) {
+      if (sx < sy) { sx += ddX; mapX += stepX; lado = 0; } else { sy += ddY; mapY += stepY; lado = 1; }
+      cel = dmCel(mapX, mapY);
+      if (cel === '1' || (cel === 'G')) hit = 1;
+    }
+    const perp = lado === 0 ? (sx - ddX) : (sy - ddY);
+    const alt = Math.min(ch * 2.4, ch / (perp || 0.01));
+    const y0 = meio - alt / 2 + bobY, y1 = meio + alt / 2 + bobY;
+    // coluna da textura
+    let wallX = lado === 0 ? d.py + perp * rdy : d.px + perp * rdx; wallX -= wallX | 0;
+    let tx = (wallX * 128) | 0; if ((lado === 0 && rdx > 0) || (lado === 1 && rdy < 0)) tx = 127 - tx;
+    const tex = cel === 'G' ? DM_TEX.portao : (mapX + mapY) % 2 ? DM_TEX.cana : DM_TEX.canaEsc;
+    ctx.drawImage(tex, tx, 0, 1, 128, col, y0, passo, alt);
+    // guarda dados da coluna p/ folhas no topo (só cana)
+    if (cel !== 'G' && (col % 8 === 0)) dmColsTopo.push({ col, topo: y0, alt, perp, wallX: (lado === 0 ? d.py + perp * rdy : d.px + perp * rdx) });
+    // sombreamento por distância + lado
+    const escuro = clamp(perp / 11, 0, 0.82) + (lado ? 0.16 : 0);
+    if (escuro > 0.02) { ctx.fillStyle = 'rgba(8,6,14,' + Math.min(0.86, escuro).toFixed(3) + ')'; ctx.fillRect(col, y0, passo, alt); }
+    for (let k = 0; k < passo; k++) zbuf[col + k] = perp;
+  }
+
+  // ── FOLHAS balançando no topo das paredes de cana ──
+  if (DM_FOLHAS) for (const c2 of dmColsTopo) {
+    if (c2.perp > 8) continue;                                  // longe demais: some
+    const tam = clamp(48 / c2.perp, 6, 90), sway = Math.sin(G.t * 2.2 + c2.wallX * 3.1 + c2.col * 0.05) * (tam * 0.16);
+    const fx = c2.col + sway, fy = c2.topo;
+    const fimg = DM_FOLHAS[(c2.col + (c2.wallX * 4 | 0)) % 3];
+    const al = clamp(1 - c2.perp / 8, 0.2, 1);
+    ctx.globalAlpha = al * 0.9;
+    ctx.save(); ctx.translate(fx, fy); ctx.rotate(sway * 0.012);
+    ctx.drawImage(fimg, -tam / 2, -tam * 0.55, tam, tam); ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  // ── SPRITES (inimigos, peças, projéteis) via z-buffer ──
+  const sprites = [];
+  for (const e of d.inimigos) sprites.push({ x: e.x, y: e.y, tipo: 'inim', e });
+  for (const p of d.pecas) if (p.viva) sprites.push({ x: p.x, y: p.y, tipo: 'peca', e: p });
+  for (const p of d.projeteis) sprites.push({ x: p.x, y: p.y, tipo: 'proj', e: p });
+  for (const r of d.portais) if (!r.usado) sprites.push({ x: r.x, y: r.y, tipo: 'refil', e: r });
+  for (const s2 of sprites) { const dx = s2.x - d.px, dy = s2.y - d.py; s2.dist = dx * dx + dy * dy; }
+  sprites.sort((a, b) => b.dist - a.dist);
+  const invDet = 1 / (CFG.DM_FOV * co * co + CFG.DM_FOV * si * si || 1);
+  for (const s2 of sprites) {
+    const dx = s2.x - d.px, dy = s2.y - d.py;
+    const transX = invDet * (co * dx + si * dy);              // profundidade
+    const transY = invDet * (-si * dx * CFG.DM_FOV + co * dy * CFG.DM_FOV) / CFG.DM_FOV;   // lateral
+    // rotaciona p/ espaço da câmera
+    const camDepth = dx * co + dy * si;
+    if (camDepth <= 0.2) continue;
+    const camSide = -dx * si + dy * co;
+    const scr = (cw / 2) * (1 + camSide / (camDepth * CFG.DM_FOV));
+    const tam = Math.abs(ch / camDepth);
+    dmDesenharSprite(s2, scr, tam, camDepth, zbuf, meio + bobY);
+  }
+
+  // ── FLASHES de tela ──
+  if (d.hurt > 0) { ctx.fillStyle = 'rgba(180,20,20,' + (d.hurt * 0.5).toFixed(3) + ')'; ctx.fillRect(0, 0, cw, ch); }
+  if (d.flash > 0) { ctx.fillStyle = 'rgba(180,220,140,' + (d.flash * 1.5).toFixed(3) + ')'; ctx.fillRect(0, 0, cw, ch); }
+  // vinheta
+  const vg = ctx.createRadialGradient(cw / 2, ch / 2, ch * 0.3, cw / 2, ch / 2, ch * 0.75);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.5)'); ctx.fillStyle = vg; ctx.fillRect(0, 0, cw, ch);
+
+  dmDesenharArma();
+  dmDesenharHUD();
+  if (d.fim) dmDesenharFim();
+}
+
+function dmDesenharSprite(s2, scr, tam, dist, zbuf, horiz) {
+  const cw = W, ch = H;
+  const e = s2.e, t = s2.tipo;
+  let sz = tam, yBase = horiz + tam / 2, alpha = 1;
+  if (t === 'inim') sz = tam * (e.r * 2.4);
+  else if (t === 'peca') { sz = tam * 0.4; yBase = horiz + tam / 2 - Math.abs(Math.sin(e.fase)) * tam * 0.1; }
+  else if (t === 'proj') sz = tam * 0.22;
+  else if (t === 'refil') sz = tam * 0.5;
+  const x0 = (scr - sz / 2) | 0, x1 = (scr + sz / 2) | 0;
+  const yTop = yBase - sz;
+  // desenha coluna a coluna respeitando z-buffer
+  const draw = (colFn) => { for (let x = Math.max(0, x0); x < Math.min(cw, x1); x += 2) {
+      if (dist * dist >= zbuf[x] * zbuf[x] * 0 && dist < Math.sqrt(zbuf[x]) * 999) {}
+      if (dist < zbuf[x] || zbuf[x] === 0) { const u = (x - x0) / (sz || 1); colFn(x, u); } } };
+  ctx.save();
+  if (t === 'inim') {
+    const flash = e.flash > 0, tt = e.faseA, cx = scr, chao = yBase;
+    const morrendo = e.morto > 0;
+    if (morrendo) { ctx.globalAlpha = clamp(e.morto / 0.5, 0, 1); ctx.translate(0, sz * (1 - e.morto / 0.5) * 0.3); }
+    // helpers de sombreamento por distância
+    const som = clamp(1 - dist / 10, 0.45, 1);
+    const tint = (hex) => { if (flash) return '#ffffff'; return hex; };
+    const F = (hex, a) => { ctx.globalAlpha = (morrendo ? clamp(e.morto / 0.5, 0, 1) : 1) * (a == null ? 1 : a); ctx.fillStyle = tint(hex); };
+    // sombra no chão
+    ctx.globalAlpha = (morrendo ? e.morto / 0.5 : 1) * 0.3; ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.ellipse(cx, chao, sz * 0.42, sz * 0.1, 0, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
+
+    if (e.id === 'gafanhoto') {
+      // ── GAFANHOTO: verde, corpo alongado, grandes pernas traseiras em Z, asas ──
+      const bx = cx, by = chao - sz * 0.42, bw = sz * 0.5, bh = sz * 0.34;
+      const salto = Math.abs(Math.sin(tt * 0.7)) * sz * 0.06;
+      // pernas traseiras (Z) — animam
+      ctx.strokeStyle = tint('#4f8a2a'); ctx.lineWidth = Math.max(2, sz * 0.06); ctx.lineCap = 'round';
+      for (const sgn of [-1, 1]) {
+        const hipX = bx + sgn * bw * 0.5, hipY = by + bh * 0.1;
+        const kneeX = hipX + sgn * sz * 0.24, kneeY = hipY - sz * 0.28 + salto;
+        const footX = hipX + sgn * sz * 0.05, footY = chao;
+        ctx.beginPath(); ctx.moveTo(hipX, hipY); ctx.lineTo(kneeX, kneeY); ctx.lineTo(footX, footY); ctx.stroke();
+        F('#3a6b1e'); ctx.beginPath(); ctx.moveTo(hipX, hipY - sz * 0.02); ctx.lineTo(kneeX, kneeY); ctx.lineTo(hipX + sgn * sz * 0.1, hipY + sz * 0.06); ctx.fill();  // coxa grossa
+      }
+      // pernas dianteiras finas
+      ctx.strokeStyle = tint('#5f9a35'); ctx.lineWidth = Math.max(1, sz * 0.03);
+      for (const sgn of [-1, 1]) { ctx.beginPath(); ctx.moveTo(bx + sgn * bw * 0.2, by + bh * 0.4);
+        ctx.lineTo(bx + sgn * bw * 0.4, chao); ctx.stroke(); }
+      // asa (translúcida)
+      ctx.globalAlpha = flash ? 1 : 0.55; F(flash ? '#fff' : '#bfe89a', 0.55);
+      ctx.beginPath(); ctx.ellipse(bx + sz * 0.06, by, bw * 0.62, bh * 0.72, -0.2, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
+      // abdômen segmentado
+      F('#5f9a35'); ctx.beginPath(); ctx.ellipse(bx, by, bw * 0.5, bh, 0, 0, 7); ctx.fill();
+      ctx.strokeStyle = tint('#3a6b1e'); ctx.lineWidth = 1;
+      for (let k = 1; k < 4; k++) { ctx.beginPath(); ctx.ellipse(bx + bw * 0.5 - k * bw * 0.22, by, bw * 0.08, bh * (1 - k * 0.12), 0, 1.4, 4.8); ctx.stroke(); }
+      // cabeça inclinada + olho grande
+      const hx = bx - bw * 0.5, hy = by - bh * 0.2;
+      F('#6fb03e'); ctx.beginPath(); ctx.ellipse(hx, hy, sz * 0.13, sz * 0.11, -0.3, 0, 7); ctx.fill();
+      F('#0a0a0a'); ctx.beginPath(); ctx.ellipse(hx - sz * 0.03, hy - sz * 0.02, sz * 0.06, sz * 0.07, 0, 0, 7); ctx.fill();
+      if (!flash) { ctx.fillStyle = '#fff'; ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(hx - sz * 0.05, hy - sz * 0.04, sz * 0.02, 0, 7); ctx.fill(); }
+      // antenas longas
+      ctx.strokeStyle = tint('#6fb03e'); ctx.lineWidth = Math.max(1, sz * 0.02);
+      for (const sgn of [0, 1]) { ctx.beginPath(); ctx.moveTo(hx, hy - sz * 0.08);
+        ctx.quadraticCurveTo(hx - sz * (0.14 + sgn * 0.05), hy - sz * 0.28, hx - sz * (0.22 + sgn * 0.08) + Math.sin(tt) * sz * 0.03, hy - sz * 0.34); ctx.stroke(); }
+
+    } else if (e.atira) {
+      // ── ALIEN INSETOIDE: carapaça roxa iridescente, tentáculos, olhos compostos, mandíbulas ──
+      const headY = chao - sz * 0.78, bodyY = chao - sz * 0.4;
+      // tentáculos inferiores (se contorcem)
+      ctx.strokeStyle = tint('#7a2ea8'); ctx.lineWidth = Math.max(2, sz * 0.055); ctx.lineCap = 'round';
+      for (let i = -2; i <= 2; i++) { const base = cx + i * sz * 0.11, wob = Math.sin(tt * 1.3 + i) * sz * 0.09;
+        ctx.beginPath(); ctx.moveTo(base, bodyY + sz * 0.1);
+        ctx.quadraticCurveTo(base + wob, chao - sz * 0.05, base + wob * 1.4, chao + sz * 0.02); ctx.stroke(); }
+      // corpo/tórax bulboso com brilho iridescente
+      const bg = ctx.createRadialGradient(cx - sz * 0.1, bodyY - sz * 0.05, sz * 0.05, cx, bodyY, sz * 0.42);
+      if (flash) { bg.addColorStop(0, '#fff'); bg.addColorStop(1, '#fff'); }
+      else { bg.addColorStop(0, '#c060e8'); bg.addColorStop(0.5, '#8f2ec0'); bg.addColorStop(1, '#5a1c80'); }
+      ctx.globalAlpha = morrendo ? e.morto / 0.5 : 1; ctx.fillStyle = bg;
+      ctx.beginPath(); ctx.ellipse(cx, bodyY, sz * 0.34, sz * 0.4, 0, 0, 7); ctx.fill();
+      // placas da carapaça
+      ctx.strokeStyle = tint('#4a1668'); ctx.lineWidth = 1.5;
+      for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.ellipse(cx, bodyY - sz * 0.05 + k * sz * 0.13, sz * 0.3 * (1 - k * 0.15), sz * 0.1, 0, 3.4, 6.0); ctx.stroke(); }
+      // manchas bioluminescentes
+      if (!flash) { ctx.fillStyle = '#e0a0ff'; ctx.globalAlpha = 0.5 + 0.5 * Math.sin(tt * 2);
+        for (const [dx, dy] of [[-0.14, 0], [0.14, 0.06], [0, 0.18]]) { ctx.beginPath(); ctx.arc(cx + dx * sz, bodyY + dy * sz, sz * 0.04, 0, 7); ctx.fill(); }
+        ctx.globalAlpha = 1; }
+      // cabeça achatada
+      ctx.fillStyle = tint('#9f3ad0'); ctx.beginPath(); ctx.ellipse(cx, headY, sz * 0.26, sz * 0.2, 0, 0, 7); ctx.fill();
+      // 2 olhos compostos grandes (vermelho brilhante) + reflexo
+      for (const sgn of [-1, 1]) {
+        ctx.fillStyle = tint('#ff2020'); ctx.beginPath(); ctx.ellipse(cx + sgn * sz * 0.13, headY - sz * 0.02, sz * 0.1, sz * 0.12, sgn * 0.2, 0, 7); ctx.fill();
+        if (!flash) { ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.lineWidth = 1;   // facetas
+          for (let g2 = -1; g2 <= 1; g2++) { ctx.beginPath(); ctx.moveTo(cx + sgn * sz * 0.13 + g2 * sz * 0.03, headY - sz * 0.13); ctx.lineTo(cx + sgn * sz * 0.13 + g2 * sz * 0.03, headY + sz * 0.09); ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.stroke(); }
+          ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(cx + sgn * sz * 0.1, headY - sz * 0.06, sz * 0.025, 0, 7); ctx.fill(); }
+      }
+      // mandíbulas/presas que abrem
+      const gape = (0.5 + 0.5 * Math.sin(tt * 3)) * sz * 0.06;
+      ctx.strokeStyle = tint('#d0d0d0'); ctx.lineWidth = Math.max(2, sz * 0.04); ctx.lineCap = 'round';
+      for (const sgn of [-1, 1]) { ctx.beginPath(); ctx.moveTo(cx + sgn * sz * 0.08, headY + sz * 0.14);
+        ctx.quadraticCurveTo(cx + sgn * (sz * 0.16), headY + sz * 0.24 + gape, cx + sgn * sz * 0.05, headY + sz * 0.3 + gape); ctx.stroke(); }
+      // baba ácida pingando
+      if (!flash && !morrendo) { ctx.fillStyle = '#b0f030'; ctx.globalAlpha = 0.8;
+        const dripY = headY + sz * 0.3 + (tt * 20 % (sz * 0.3));
+        ctx.beginPath(); ctx.arc(cx, dripY, sz * 0.035, 0, 7); ctx.fill(); ctx.globalAlpha = 1; }
+      // antenas com bulbo luminoso
+      ctx.strokeStyle = tint('#9f3ad0'); ctx.lineWidth = Math.max(1, sz * 0.025);
+      for (const sgn of [-1, 1]) { const ax = cx + sgn * sz * 0.12, ay = headY - sz * 0.16;
+        const tipX = ax + sgn * sz * 0.12 + Math.sin(tt * 1.5) * sz * 0.03, tipY = ay - sz * 0.2;
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.quadraticCurveTo(ax + sgn * sz * 0.1, ay - sz * 0.16, tipX, tipY); ctx.stroke();
+        if (!flash) { ctx.fillStyle = '#ff6060'; ctx.globalAlpha = 0.6 + 0.4 * Math.sin(tt * 4); ctx.beginPath(); ctx.arc(tipX, tipY, sz * 0.03, 0, 7); ctx.fill(); ctx.globalAlpha = 1; } }
+
+    } else {
+      // ── BROCA: lagarta-praga segmentada marrom-dourada, patinhas, cabeça com mandíbulas ──
+      const segs = 5, topY = chao - sz * 0.5, segH = sz * 0.9 / segs;
+      // patinhas laterais (animam onduladas)
+      ctx.strokeStyle = tint('#8a6a1e'); ctx.lineWidth = Math.max(1, sz * 0.03); ctx.lineCap = 'round';
+      for (let sgIdx = 0; sgIdx < segs; sgIdx++) { const sy = topY + sgIdx * segH + segH * 0.5;
+        const wob = Math.sin(tt * 2 + sgIdx * 0.8) * sz * 0.04;
+        for (const sgn of [-1, 1]) { const r2 = sz * (0.16 + 0.02 * Math.sin(sgIdx));
+          ctx.beginPath(); ctx.moveTo(cx + sgn * r2 * 0.6, sy); ctx.lineTo(cx + sgn * r2 + sgn * wob, sy + segH * 0.5); ctx.stroke(); } }
+      // segmentos do corpo (de trás pra frente, sobrepostos)
+      for (let sgIdx = segs - 1; sgIdx >= 0; sgIdx--) {
+        const sy = topY + sgIdx * segH + segH * 0.5;
+        const wob = Math.sin(tt * 2 + sgIdx * 0.8) * sz * 0.05;   // ondulação corporal
+        const r2 = sz * (0.2 + 0.03 * Math.sin(sgIdx * 0.9)) * (sgIdx === 0 ? 0.82 : 1);
+        const sg = ctx.createRadialGradient(cx - r2 * 0.3 + wob, sy - r2 * 0.3, r2 * 0.15, cx + wob, sy, r2);
+        if (flash) { sg.addColorStop(0, '#fff'); sg.addColorStop(1, '#fff'); }
+        else { sg.addColorStop(0, '#e8c058'); sg.addColorStop(0.6, '#c8992e'); sg.addColorStop(1, '#8a6a1e'); }
+        ctx.globalAlpha = morrendo ? e.morto / 0.5 : 1; ctx.fillStyle = sg;
+        ctx.beginPath(); ctx.ellipse(cx + wob, sy, r2, segH * 0.72, 0, 0, 7); ctx.fill();
+        // espinhos dorsais
+        if (!flash) { ctx.fillStyle = '#6a4e14'; ctx.beginPath();
+          ctx.moveTo(cx + wob - r2 * 0.15, sy - segH * 0.6); ctx.lineTo(cx + wob, sy - segH * 0.95); ctx.lineTo(cx + wob + r2 * 0.15, sy - segH * 0.6); ctx.fill(); }
+      }
+      // cabeça (segmento superior) com olhos + mandíbulas
+      const hy = topY, hwob = Math.sin(tt * 2) * sz * 0.05;
+      ctx.fillStyle = tint('#a87c22'); ctx.beginPath(); ctx.ellipse(cx + hwob, hy - segH * 0.2, sz * 0.2, sz * 0.19, 0, 0, 7); ctx.fill();
+      if (!flash) {
+        ctx.fillStyle = '#1a1208'; for (const sgn of [-1, 1]) { ctx.beginPath(); ctx.arc(cx + hwob + sgn * sz * 0.09, hy - segH * 0.24, sz * 0.055, 0, 7); ctx.fill(); }
+        ctx.fillStyle = '#ffcf3a'; for (const sgn of [-1, 1]) { ctx.beginPath(); ctx.arc(cx + hwob + sgn * sz * 0.09, hy - segH * 0.24, sz * 0.03, 0, 7); ctx.fill(); }
+        ctx.fillStyle = '#000'; for (const sgn of [-1, 1]) { ctx.beginPath(); ctx.arc(cx + hwob + sgn * sz * 0.09, hy - segH * 0.24, sz * 0.014, 0, 7); ctx.fill(); }
+        // mandíbulas (garras) que abrem/fecham
+        const gape = (0.5 + 0.5 * Math.sin(tt * 4)) * sz * 0.05;
+        ctx.strokeStyle = '#3a2a0e'; ctx.lineWidth = Math.max(2, sz * 0.045); ctx.lineCap = 'round';
+        for (const sgn of [-1, 1]) { ctx.beginPath(); ctx.moveTo(cx + hwob + sgn * sz * 0.06, hy + segH * 0.05);
+          ctx.lineTo(cx + hwob + sgn * (sz * 0.14 + gape), hy + segH * 0.18); ctx.stroke(); }
+        // antenas curtas
+        ctx.strokeStyle = tint('#a87c22'); ctx.lineWidth = Math.max(1, sz * 0.02);
+        for (const sgn of [-1, 1]) { ctx.beginPath(); ctx.moveTo(cx + hwob + sgn * sz * 0.08, hy - segH * 0.4);
+          ctx.lineTo(cx + hwob + sgn * sz * 0.16, hy - segH * 0.7 + Math.sin(tt) * sz * 0.03); ctx.stroke(); }
+      }
+    }
+    ctx.globalAlpha = 1;
+    // barra de vida flutuante
+    if (e.hp < e.hpMax && !e.morto) { const bw = sz * 0.62;
+      ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(scr - bw / 2, chao - sz - 6, bw, 5);
+      ctx.fillStyle = e.hp / e.hpMax > 0.5 ? '#7fe36a' : '#e0402e'; ctx.fillRect(scr - bw / 2, chao - sz - 6, bw * (e.hp / e.hpMax), 5);
+      ctx.strokeStyle = 'rgba(255,255,255,.3)'; ctx.lineWidth = 1; ctx.strokeRect(scr - bw / 2, chao - sz - 6, bw, 5); }
+  } else if (t === 'peca') {
+    if (!(dist < zbuf[scr | 0] || true)) {}
+    const gir = e.fase; ctx.translate(scr, yBase - sz / 2);
+    ctx.fillStyle = '#ffd94d'; ctx.strokeStyle = '#c79b08'; ctx.lineWidth = Math.max(1, sz * 0.06);
+    // engrenagem
+    for (let a = 0; a < 8; a++) { ctx.save(); ctx.rotate(gir + a * Math.PI / 4);
+      ctx.fillRect(-sz * 0.08, -sz * 0.5, sz * 0.16, sz * 0.16); ctx.restore(); }
+    ctx.beginPath(); ctx.arc(0, 0, sz * 0.34, 0, 7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#2a2a2a'; ctx.beginPath(); ctx.arc(0, 0, sz * 0.12, 0, 7); ctx.fill();
+    // brilho
+    ctx.fillStyle = 'rgba(255,240,180,' + (0.4 + 0.4 * Math.sin(gir * 2)) + ')';
+    ctx.beginPath(); ctx.arc(0, 0, sz * 0.5, 0, 7); ctx.fill();
+  } else if (t === 'proj') {
+    if (dist < zbuf[scr | 0]) { ctx.fillStyle = '#b0f030';
+      ctx.beginPath(); ctx.arc(scr, yBase - sz / 2, sz / 2, 0, 7); ctx.fill();
+      ctx.fillStyle = 'rgba(200,255,120,.4)'; ctx.beginPath(); ctx.arc(scr, yBase - sz / 2, sz, 0, 7); ctx.fill(); }
+  } else if (t === 'refil') {
+    if (dist < zbuf[scr | 0]) { ctx.translate(scr, yBase - sz / 2);
+      ctx.fillStyle = '#2e6b7c'; ctx.fillRect(-sz * 0.2, -sz * 0.3, sz * 0.4, sz * 0.6);
+      ctx.fillStyle = '#8fd6e8'; ctx.fillRect(-sz * 0.12, -sz * 0.22, sz * 0.24, sz * 0.2);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold ' + (sz * 0.3) + 'px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('💨', 0, sz * 0.1); }
+  }
+  ctx.restore();
+}
+
+function dmDesenharArma() {
+  const d = G.dm, cw = W, ch = H;
+  const bx = cw / 2 + Math.sin(d.bob) * 14, by = ch - Math.abs(Math.cos(d.bob)) * 10;
+  const rec = d.atirando > 0 ? d.atirando * (d.arma === 'chave' ? 60 : 30) : 0;   // recuo
+  if (d.arma === 'chave') {
+    const sw = Math.sin(d.bob * 0.5) * 20, ang = d.atirando > 0 ? -0.9 * (d.atirando / 0.18) : 0;
+    ctx.save(); ctx.translate(bx + 120 + sw, by + 40 - rec); ctx.rotate(-0.5 + ang);
+    // braço
+    ctx.fillStyle = '#c98a5e'; ctx.fillRect(-24, 40, 46, 160);
+    ctx.fillStyle = '#8f5a3a'; ctx.fillRect(-24, 40, 12, 160);
+    // luva
+    ctx.fillStyle = '#2a3a4a'; ctx.fillRect(-30, 20, 58, 44);
+    // chave inglesa
+    ctx.fillStyle = '#9aa4ac'; ctx.fillRect(-12, -140, 22, 170);
+    ctx.fillStyle = '#c0c8d0'; ctx.fillRect(-12, -140, 8, 170);
+    ctx.fillStyle = '#7a848c'; ctx.beginPath();
+    ctx.moveTo(-22, -140); ctx.lineTo(20, -140); ctx.lineTo(16, -168); ctx.lineTo(6, -158);
+    ctx.lineTo(-2, -168); ctx.lineTo(-10, -158); ctx.lineTo(-18, -168); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#5a636a'; ctx.fillRect(-8, -150, 12, 14);
+    ctx.restore();
+  } else {
+    // pulverizador (escopeta) centralizado
+    ctx.save(); ctx.translate(bx, by - rec);
+    ctx.fillStyle = '#c98a5e'; ctx.fillRect(-90, 60, 52, 150); ctx.fillRect(48, 60, 52, 150);  // 2 mãos
+    ctx.fillStyle = '#2a3a4a'; ctx.fillRect(-96, 40, 62, 40); ctx.fillRect(42, 40, 62, 40);
+    // tanque + cano
+    ctx.fillStyle = '#2e6b7c'; ctx.fillRect(-40, -10, 80, 90);
+    ctx.fillStyle = '#245660'; ctx.fillRect(-40, -10, 80, 14);
+    ctx.fillStyle = '#4a4038'; ctx.fillRect(-14, -120, 28, 120);           // cano
+    ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(0, -120, 18, 0, 7); ctx.fill();
+    ctx.fillStyle = '#8fd6e8'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('☣', 0, 50);
+    if (d.flash > 0) { ctx.fillStyle = 'rgba(180,240,120,' + (d.flash * 3) + ')';   // jato
+      ctx.beginPath(); ctx.moveTo(0, -130); ctx.lineTo(-40, -220); ctx.lineTo(40, -220); ctx.fill(); }
+    ctx.restore();
+  }
+}
+
+function dmRosto(hp) {                                          // "cara" do Doom por HP
+  if (hp <= 0) return '💀';
+  if (hp > 75) return '😄'; if (hp > 50) return '😐'; if (hp > 25) return '😟'; return '😫';
+}
+function dmDesenharHUD() {
+  const d = G.dm, cw = W, ch = H, grande = MOBILE;
+  // barra inferior estilo Doom
+  const bh = grande ? 64 : 52;
+  ctx.fillStyle = 'rgba(20,14,10,.9)'; ctx.fillRect(0, ch - bh, cw, bh);
+  ctx.fillStyle = '#4a3620'; ctx.fillRect(0, ch - bh, cw, 3);
+  // HP à esquerda
+  ctx.textAlign = 'left'; ctx.font = '800 ' + (grande ? 30 : 26) + 'px "Courier New", monospace';
+  ctx.fillStyle = d.hp > 30 ? '#7fe36a' : (Math.floor(G.t * 4) % 2 ? '#ff5a4a' : '#ffb03a');
+  ctx.fillText(Math.ceil(d.hp) + '%', 16, ch - bh / 2 + 10);
+  ctx.fillStyle = '#9fb8a8'; ctx.font = '700 10px "Courier New", monospace'; ctx.fillText('VIDA', 18, ch - bh + 16);
+  // rosto no centro
+  ctx.font = (grande ? 44 : 38) + 'px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(dmRosto(d.hp), cw / 2, ch - bh / 2 + 14);
+  // munição/arma à direita
+  ctx.textAlign = 'right'; ctx.font = '800 ' + (grande ? 26 : 22) + 'px "Courier New", monospace';
+  if (d.arma === 'spray') { ctx.fillStyle = d.mun > 5 ? '#8fd6e8' : '#ff5a4a';
+    ctx.fillText('💨 ' + d.mun, cw - 16, ch - bh / 2 + 6); }
+  else { ctx.fillStyle = '#cfd6dc'; ctx.fillText('🔧 ∞', cw - 16, ch - bh / 2 + 6); }
+  ctx.fillStyle = '#9fb8a8'; ctx.font = '700 10px "Courier New", monospace';
+  ctx.fillText((grande ? 'toque troca arma' : 'TAB/1-2 troca'), cw - 18, ch - bh + 16);
+  // peças coletadas (topo)
+  ctx.textAlign = 'center'; ctx.font = '800 ' + (grande ? 20 : 17) + 'px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(20,14,10,.7)'; rr(cw / 2 - 90, 8, 180, grande ? 34 : 28, 8); ctx.fill();
+  ctx.fillStyle = d.portao ? '#7fe36a' : '#ffd94d';
+  ctx.fillText('🔧 PEÇAS ' + d.coletadas + '/3' + (d.portao ? ' ✓' : ''), cw / 2, grande ? 32 : 28);
+  // tempo + kills
+  ctx.textAlign = 'left'; ctx.fillStyle = '#cfe0b8'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('⏱ ' + mmss(Math.floor(d.t)) + '   ☠ ' + d.kills, 16, 24);
+  // bússola pro objetivo
+  { let ax, ay, lbl, cor;
+    if (d.portao && d.gx != null) { ax = d.gx; ay = d.gy; lbl = '🏭'; cor = '#7fe36a'; }
+    else { let melhor = 1e9, alvo = null; for (const p of d.pecas) if (p.viva) {
+        const dd = (p.x - d.px) ** 2 + (p.y - d.py) ** 2; if (dd < melhor) { melhor = dd; alvo = p; } }
+      if (alvo) { ax = alvo.x; ay = alvo.y; lbl = '🔧'; cor = '#ffd94d'; } }
+    if (ax != null) { const ang = Math.atan2(ay - d.py, ax - d.px) - d.ang;
+      const bx = cw - 60, by = 60, rad = 30;
+      ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(bx, by, rad, 0, 7); ctx.stroke();
+      ctx.fillStyle = cor; ctx.font = '18px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(lbl, bx + Math.cos(ang) * rad, by + Math.sin(ang) * rad + 6); } }
+  // mira
+  ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(cw / 2 - 10, ch / 2); ctx.lineTo(cw / 2 + 10, ch / 2);
+  ctx.moveTo(cw / 2, ch / 2 - 10); ctx.lineTo(cw / 2, ch / 2 + 10); ctx.stroke();
+  // mensagem
+  if (d.msgT > 0 && d.msg) { ctx.globalAlpha = clamp(d.msgT, 0, 1);
+    ctx.font = '800 ' + (grande ? 18 : 16) + 'px "Courier New", monospace'; ctx.textAlign = 'center';
+    const w2 = ctx.measureText(d.msg).width + 36;
+    ctx.fillStyle = 'rgba(10,8,14,.9)'; rr(cw / 2 - w2 / 2, ch * 0.72, w2, 34, 9); ctx.fill();
+    ctx.strokeStyle = '#ffd94d'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#ffe9a0'; ctx.fillText(d.msg, cw / 2, ch * 0.72 + 22); ctx.globalAlpha = 1; }
+  // controles mobile
+  if (grande) dmBotoesMobile();
+  ctx.textAlign = 'left';
+}
+function dmBotoesMobile() {
+  const d = G.dm, cw = W, ch = H;
+  // botão atacar (direita)
+  const ax = cw - 90, ay = ch - 150;
+  ctx.fillStyle = 'rgba(200,60,40,.85)'; ctx.beginPath(); ctx.arc(ax, ay, 46, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#ff8a6a'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = '30px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(d.arma === 'chave' ? '🔧' : '💨', ax, ay + 11);
+  botoesTela.push({ x: ax - 46, y: ay - 46, w: 92, h: 92, cb: dmAtacar });
+  // trocar arma
+  const tx = cw - 150, ty = ch - 120;
+  ctx.fillStyle = 'rgba(30,44,54,.85)'; ctx.beginPath(); ctx.arc(tx, ty, 30, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#8fd6e8'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = '20px sans-serif'; ctx.fillText('🔄', tx, ty + 7);
+  botoesTela.push({ x: tx - 30, y: ty - 30, w: 60, h: 60, cb: trocarArmaDoom });
+  ctx.textAlign = 'left';
+}
+
+function dmDesenharFim() {
+  const d = G.dm, cw = W, ch = H;
+  ctx.fillStyle = d.vitoria ? 'rgba(10,30,14,.9)' : 'rgba(30,8,8,.92)'; ctx.fillRect(0, 0, cw, ch);
+  const { x, y } = painel(560, 340);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = d.vitoria ? '#7fe36a' : '#ff5a4a'; ctx.font = '800 34px "Segoe UI", sans-serif';
+  ctx.fillText(d.vitoria ? '🏭 VOCÊ ESCAPOU!' : '💀 VOCÊ VIROU ADUBO', cw / 2, y + 60);
+  ctx.fillStyle = '#cfe0b8'; ctx.font = '700 13px "Courier New", monospace';
+  ctx.fillText(d.vitoria ? 'fugiu do pesadelo com as 3 peças!' : 'as pragas dominaram o canavial...', cw / 2, y + 88);
+  ctx.font = (MOBILE ? 60 : 52) + 'px sans-serif'; ctx.fillText(d.vitoria ? '😎' : '💀', cw / 2, y + 152);
+  const linhas = [
+    ['⏱ Tempo', mmss(Math.floor(d.t)), '#8fd6e8'],
+    ['☠ Pragas eliminadas', '' + d.kills, '#ffd94d'],
+    ['🔧 Peças coletadas', d.coletadas + '/3', '#7fd47f'],
+  ];
+  linhas.forEach((l, i) => { const Y = y + 186 + i * 26;
+    ctx.textAlign = 'left'; ctx.fillStyle = '#cfe0e8'; ctx.font = '700 13px "Courier New", monospace'; ctx.fillText(l[0], x + 60, Y);
+    ctx.textAlign = 'right'; ctx.fillStyle = l[2]; ctx.fillText(l[1], x + 560 - 60, Y); });
+  ctx.textAlign = 'center';
+  if (d.vitoria) { ctx.fillStyle = d.novoRec ? '#ffd94d' : '#9fb8a8'; ctx.font = '700 13px "Courier New", monospace';
+    ctx.fillText(d.novoRec ? '✨ NOVO RECORDE DE FUGA! ✨' : (d.recorde ? 'recorde: ' + mmss(d.recorde) : ''), cw / 2, y + 272); }
+  if (d.fimT > 0.5) {
+    chip(x + 40, y + 340 - 44, 240, 34, '🔄 TENTAR DE NOVO', null, true, iniciarDoom);
+    chip(x + 320, y + 340 - 44, 240, 34, '🏠 VOLTAR AO MENU', null, true, () => { G.fase = 'menu'; });
+  }
+  ctx.textAlign = 'left';
+}
+
 function iniciarMecanico() {
   if (typeof document !== 'undefined') { const cb = document.getElementById('codigoBox'); if (cb) cb.style.display = 'none'; }
   const inp = document.getElementById('nome');
@@ -4182,6 +4911,7 @@ function renderMecanico() {
 function render() {
   botoesTela.length = 0;
   if (G.fase === 'survivor') { renderSurvivor(); return; }
+  if (G.fase === 'doom') { renderDoom(); return; }
   if (G.fase === 'mecanico') { renderMecanico(); return; }
   const Z = MOBILE ? CFG.ZOOM_MOBILE : 1;
   const vw = W / Z, vh = H / Z;                     // janela de mundo visível
@@ -5319,13 +6049,23 @@ function desenharMenu() {
   }
 
   // ══════════════════ BARRA INFERIOR ══════════════════
-  { const pw = 400, pxp = cx - pw / 2, pyp = 420, pulse = 0.5 + 0.5 * Math.sin(t * 3);
-    ctx.save(); ctx.shadowColor = 'rgba(120,175,225,' + (0.3 + pulse * 0.45) + ')'; ctx.shadowBlur = 16;
-    rrect(pxp, pyp, pw, 32, 16); ctx.fillStyle = '#2e6b9c'; ctx.fill(); ctx.restore();
-    rrect(pxp, pyp, pw, 32, 16); ctx.strokeStyle = '#8fd6e8'; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.fillStyle = '#eaf4fb'; ctx.font = '800 14px "Courier New", monospace'; ctx.textAlign = 'center';
-    ctx.fillText('🔧 NOVO: MECÂNICO DE CAMPO  →', cx, pyp + 21);
-    botoesTela.push({ x: pxp, y: pyp, w: pw, h: 32, cb: iniciarMecanico }); ctx.textAlign = 'left'; }
+  { const pulse = 0.5 + 0.5 * Math.sin(t * 3), pw = 300, gap2 = 14, pyp = 420;
+    const x1 = cx - pw - gap2 / 2, x2 = cx + gap2 / 2;
+    // pílula MECÂNICO
+    ctx.save(); ctx.shadowColor = 'rgba(120,175,225,' + (0.3 + pulse * 0.4) + ')'; ctx.shadowBlur = 14;
+    rrect(x1, pyp, pw, 32, 16); ctx.fillStyle = '#2e6b9c'; ctx.fill(); ctx.restore();
+    rrect(x1, pyp, pw, 32, 16); ctx.strokeStyle = '#8fd6e8'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#eaf4fb'; ctx.font = '800 13px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('🔧 MECÂNICO DE CAMPO', x1 + pw / 2, pyp + 21);
+    botoesTela.push({ x: x1, y: pyp, w: pw, h: 32, cb: iniciarMecanico });
+    // pílula PESADELO (Doom)
+    ctx.save(); ctx.shadowColor = 'rgba(220,60,50,' + (0.35 + pulse * 0.45) + ')'; ctx.shadowBlur = 16;
+    rrect(x2, pyp, pw, 32, 16); ctx.fillStyle = '#7a1e14'; ctx.fill(); ctx.restore();
+    rrect(x2, pyp, pw, 32, 16); ctx.strokeStyle = '#ff6a4a'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#ffe0d8'; ctx.font = '800 13px "Courier New", monospace';
+    ctx.fillText('🔦 PESADELO NO CANAVIAL', x2 + pw / 2, pyp + 21);
+    botoesTela.push({ x: x2, y: pyp, w: pw, h: 32, cb: iniciarDoom });
+    ctx.textAlign = 'left'; }
   ctx.fillStyle = 'rgba(6,10,4,.5)'; ctx.fillRect(0, H - 44, W, 44);
   ctx.textAlign = 'left'; ctx.fillStyle = '#cfe0b8'; ctx.font = '700 12px "Courier New", monospace';
   ctx.fillText('\uD83C\uDFC6 Campanha: ' + G.recDias + 'd · pico ' + $(G.recGrana), 20, H - 18);
@@ -5668,6 +6408,18 @@ const AJUDA_PAGS = [
     'JAVALÃO gigante. Sobreviva o máximo possível: o recorde de',
     'tempo fica salvo. Pause com P (ou o botão no canto).',
   ]},
+  { t: '🔦 PESADELO NO CANAVIAL (modo estilo Doom)', l: [
+    'O mecânico cochila e sonha: o canavial virou um labirinto',
+    'infestado, em 1ª pessoa! Objetivo: colete as 3 PEÇAS 🔧 e',
+    'fuja pelo PORTÃO da usina 🏭 (só abre com as 3).',
+    'MOVER: W/S anda, ←→ giram, Q/E andam de lado (strafe).',
+    'ATACAR: Espaço/F. Troca de arma: TAB (🔧 chave ou 💨',
+    'pulverizador de defensivo, que é sua "escopeta").',
+    'Pegue refis 💨 pelo mapa. Inimigos: broca (tanque),',
+    'gafanhoto (rápido) e o alien 👾 que cospe à distância.',
+    'No celular: joystick à esquerda, arraste à direita p/ olhar,',
+    'botões de tiro e troca na tela. Fuja antes de virar adubo!',
+  ]},
   { t: '🔧 MECÂNICO DE CAMPO (novo modo)', l: [
     'Dirija o CAMINHÃO-OFICINA e mantenha a safra viva (06:00→22:00)!',
     'Escolha 1 dos 8 mecânicos (cada um tem um TALENTO) e monte o',
@@ -5872,7 +6624,7 @@ function desenharFim() {
 }
 
 /* ═══════════════════════════════════════════════════════ input ════ */
-const kb = { fwd: false, re: false, esq: false, dir: false };
+const kb = { fwd: false, re: false, esq: false, dir: false, stL: false, stR: false };
 const ptrs = new Map();
 const DPAD_ZONAS = MOBILE ? [
   { id: 'fwd', rot: '▲', x: 104, y: H - 226, w: 92, h: 84 },
@@ -5931,6 +6683,17 @@ window.addEventListener('keydown', e => {
     }
     if (e.code === 'KeyP' || e.code === 'Escape') { G.pausa = !G.pausa; return; }
     // teclas de movimento caem para o switch abaixo
+  }
+  if (G.fase === 'doom') {
+    const d = G.dm;
+    if (d && d.fim) { if ((e.code === 'Space' || e.code === 'Enter') && d.fimT > 0.5) iniciarDoom();
+                      else if (e.code === 'Escape') G.fase = 'menu'; return; }
+    if (e.code === 'KeyE') { kb.stR = true; return; }
+    if (e.code === 'KeyQ') { kb.stL = true; return; }
+    if (e.code === 'Space' || e.code === 'KeyF' || e.code === 'ControlLeft') { dmAtacar(); return; }
+    if (e.code === 'Tab' || e.code === 'Digit1' || e.code === 'Digit2' || e.code === 'KeyG') { e.preventDefault && e.preventDefault(); trocarArmaDoom(); return; }
+    if (e.code === 'KeyP' || e.code === 'Escape') { G.pausa = !G.pausa; return; }
+    // W/S/setas caem para o switch (movimento/giro)
   }
   if (G.fase === 'mecanico') {
     const m = G.mec;
@@ -6010,6 +6773,7 @@ window.addEventListener('keyup', e => {
     case 'KeyD': case 'ArrowRight': kb.dir = false; break;
   }
   if (G.fase === 'mecanico' && G.mec && (e.code === 'ShiftLeft' || e.code === 'ShiftRight')) G.mec.turbo = false;
+  if (G.fase === 'doom') { if (e.code === 'KeyE') kb.stR = false; if (e.code === 'KeyQ') kb.stL = false; }
   sincDpad();
 });
 
@@ -6025,6 +6789,12 @@ canvas.addEventListener('pointerdown', e => {
     const s = G.surv;
     if (s.escolhendo || s.fim) return;             // cards/botões já tratados acima
     if (TOQUE) joySurv = { id: e.pointerId, ox: x, oy: y, dx: 0, dy: 0, ativo: true };
+    return;
+  }
+  if (G.fase === 'doom') {
+    const d = G.dm; if (!d || d.fim) return;
+    if (TOQUE && x < W / 2) d.joy = { id: e.pointerId, ox: x, oy: y, dx: 0, dy: 0, ativo: true };
+    else if (TOQUE) d._look = { id: e.pointerId, lx: x };
     return;
   }
   if (G.fase === 'mecanico') {
@@ -6044,6 +6814,10 @@ canvas.addEventListener('pointerdown', e => {
   if (G.fase === 'plantio' && TOQUE) plantar();
 });
 canvas.addEventListener('pointermove', e => {
+  if (G.fase === 'doom' && G.dm) { const d = G.dm; const [x, y] = xyLogico(e);
+    if (d.joy && d.joy.id === e.pointerId) { let dx = x - d.joy.ox, dy = y - d.joy.oy; const mm = Math.hypot(dx, dy), R = 60;
+      if (mm > R) { dx = dx / mm * R; dy = dy / mm * R; } d.joy.dx = dx / R; d.joy.dy = dy / R; return; }
+    if (d._look && d._look.id === e.pointerId) { d.giroTouch += (x - d._look.lx) * 0.004; d._look.lx = x; return; } }
   if (joySurv && joySurv.id === e.pointerId) {
     const [jx, jy] = xyLogico(e);
     let dx = jx - joySurv.ox, dy = jy - joySurv.oy; const m = Math.hypot(dx, dy), R = 62;
@@ -6056,6 +6830,8 @@ canvas.addEventListener('pointermove', e => {
   sincDpad();
 });
 function soltarPtr(e) {
+  if (G.dm) { if (G.dm.joy && G.dm.joy.id === e.pointerId) G.dm.joy = null;
+              if (G.dm._look && G.dm._look.id === e.pointerId) G.dm._look = null; }
   if (joySurv && joySurv.id === e.pointerId) joySurv = null;
   if (ptrs.delete(e.pointerId)) sincDpad();
 }
@@ -6139,6 +6915,8 @@ globalThis.__T = {
          fioMec, pedirDrone, abastecerMec, atualizarDronesMec,
          preventivaMec, panerMaquina, sortearEventoMec, buzinarMec,
          fimDoDiaMec, proximoDiaMec, comprarUpgradeMec, difMec, MEC_UPGRADES,
+         iniciarDoom, atualizarDoom, dmAtacar, trocarArmaDoom, dmMover, spawnOndaDoom,
+         dmDano, dmFim, dmSolido, dmLinhaLivre, DM_MAPA,
          colideMec, atualizarChuvaMec,
          MEC_DEFEITOS, MEC_PECAS, MEC_FERRAMENTAS, MEC_TALENTOS,
          iniciarSurvivor, atualizarSurvivor, criarInimigo, criarBoss, ganharXP,
