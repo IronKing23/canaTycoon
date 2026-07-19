@@ -212,6 +212,7 @@ const CFG = {
   ZOOM_MOBILE: 1.5,                  // câmera dá zoom no celular (tudo maior)
   SV_VEL: 200, SV_HP: 100, SV_RAIO: 13, CHAVE_SV: 'canaTycoon_survRec',   // sobrevivência de horda
   SV_MAQ_CONSERTO: 2.2, SV_MAQ_RAIO: 46,   // segundos p/ consertar + raio de interação com máquina
+  SV_COLAPSO: 30,                          // prazo (s) p/ religar 1 máquina quando TODAS quebram
   SURV_HP: 100, SURV_VEL: 178, SURV_IFRAME: 0.7, SURV_MAG: 74, SURV_MAXMOB: 190,
   SURV_CRIT: 0.16, SURV_CRIT_MULT: 2.2,
   MEC_GRANA_INI: 1500, MEC_EMERG_MULT: 1.8, MEC_VEL: 190, CHAVE_MEC: 'canaTycoon_mecRank',
@@ -4022,6 +4023,7 @@ function iniciarSobreviv(corIdx) {
     atkT: 0, invT: 0, dano: 0, tempo: 0,
     escudo: 0, escudoMax: 0, regen: 0, velMul: 1, xp: 0, moedas: 0,
     maquinas: [], consertando: null, consertoT: 0, bonusMaq: 0,
+    colapso: false, colapsoT: 0, motivoFim: null,   // emergência: todas as máquinas paradas
     upOpcoes: null, mestreAtual: null,
     recorde: rec, fim: false, fimT: 0, novoRec: false,
     joy: null, mira: { x: 1, y: 0 },
@@ -4411,6 +4413,24 @@ function atualizarMaquinasSv(dt) {
   }
   sv.maqOk = okCount;
 
+  // ===== EMERGÊNCIA: todas as máquinas pararam =====
+  if (sv.maquinas.length > 1 && okCount === 0 && sv.emHorda) {
+    if (!sv.colapso) {                                        // dispara o prazo
+      sv.colapso = true; sv.colapsoT = CFG.SV_COLAPSO;
+      svFlut('🚨 TODAS AS MÁQUINAS PARARAM!', sv.x, sv.y - 54, '#ff4040');
+      if (SFX.alarme) SFX.alarme();
+    } else {
+      sv.colapsoT -= dt;
+      // bipe de alerta a cada segundo cheio
+      if (Math.ceil(sv.colapsoT) !== Math.ceil(sv.colapsoT + dt) && sv.colapsoT <= 10 && SFX.multa) SFX.multa();
+      if (sv.colapsoT <= 0) { sv.motivoFim = 'colapso'; svFimSobreviv(); return; }  // estourou o prazo
+    }
+  } else if (sv.colapso && okCount > 0) {                     // religou pelo menos uma a tempo!
+    sv.colapso = false;
+    svFlut('✅ Produção salva!', sv.x, sv.y - 50, '#7fe36a');
+    if (SFX.recorde) SFX.recorde();
+  }
+
   // interação de conserto: jogador perto de uma máquina quebrada e parado
   const alvo = maquinaConsertavel();
   if (alvo) {
@@ -4552,6 +4572,7 @@ function aplicarUpgradeSv(op) { comprarUpgradeSv(op); fecharLojaSv(); }
 function svFimSobreviv() {
   const sv = G.sv; if (sv.fim) return;
   sv.fim = true; sv.vivo = false; sv.fimT = 0;
+  if (!sv.motivoFim) sv.motivoFim = 'morte';
   const score = sv.horda;
   if (score > sv.recorde) { sv.recorde = score; sv.novoRec = true;
     try { localStorage.setItem(CFG.CHAVE_SV, score); } catch (e) {} }
@@ -4700,9 +4721,55 @@ function renderSobreviv() {
   if (sv.invT > 0.4) { ctx.fillStyle = 'rgba(200,30,20,' + ((sv.invT - 0.4) * 0.6).toFixed(3) + ')'; ctx.fillRect(0, 0, W, H); }
 
   desenharHUDSv();
+  if (sv.colapso && !sv.fim && !sv.upOpcoes) desenharColapsoSv();
   if (G.pausa && !sv.upOpcoes && !sv.fim) desenharPausaSv();
   if (sv.upOpcoes) desenharUpgradeSv();
   if (sv.fim) desenharFimSv();
+}
+
+function desenharColapsoSv() {
+  const sv = G.sv, grande = MOBILE;
+  const t = sv.colapsoT, urgente = t <= 10;
+  const pulso = 0.5 + 0.5 * Math.sin(sv.tempo * (urgente ? 12 : 6));
+  // vinheta vermelha piscando nas bordas (mais forte quando urgente)
+  const inten = (urgente ? 0.28 : 0.16) + pulso * (urgente ? 0.18 : 0.08);
+  const vg = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.85);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(200,20,10,' + inten.toFixed(3) + ')');
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+
+  // banner no topo-centro
+  const bw = grande ? 300 : 380, bh = grande ? 52 : 58, bx = W / 2 - bw / 2, by = grande ? 74 : 82;
+  ctx.fillStyle = 'rgba(30,6,4,.92)'; rr(bx, by, bw, bh, 8); ctx.fill();
+  ctx.strokeStyle = urgente ? ('rgba(255,' + (60 + pulso * 80 | 0) + ',40,1)') : '#ff5a30';
+  ctx.lineWidth = 2 + pulso * 2; rr(bx, by, bw, bh, 8); ctx.stroke();
+  // título piscando
+  ctx.textAlign = 'center';
+  ctx.fillStyle = urgente ? ('rgb(255,' + (80 + pulso * 100 | 0) + ',60)') : '#ff8a4a';
+  ctx.font = '800 ' + (grande ? 15 : 17) + 'px "Segoe UI", sans-serif';
+  ctx.fillText('🚨 PRODUÇÃO PARADA! 🚨', W / 2, by + (grande ? 20 : 22));
+  ctx.fillStyle = '#ffd0b0'; ctx.font = '700 ' + (grande ? 10 : 11) + 'px "Courier New", monospace';
+  ctx.fillText('religue 1 máquina 🚜 antes do tempo acabar!', W / 2, by + (grande ? 34 : 38));
+  // contador grande
+  ctx.fillStyle = urgente ? '#ff3020' : '#ffd94d';
+  ctx.font = '900 ' + (grande ? 18 : 20) + 'px "Courier New", monospace';
+  ctx.fillText('⏱ ' + Math.ceil(Math.max(0, t)) + 's', W / 2, by + (grande ? 50 : 55));
+
+  // barra de tempo esvaziando (abaixo do banner)
+  const barW = bw - 20, barX = bx + 10, barY = by + bh + 6;
+  ctx.fillStyle = 'rgba(0,0,0,.5)'; rr(barX, barY, barW, 6, 3); ctx.fill();
+  const frac = clamp(t / CFG.SV_COLAPSO, 0, 1);
+  ctx.fillStyle = urgente ? '#ff3020' : '#ff8a30'; rr(barX, barY, barW * frac, 6, 3); ctx.fill();
+
+  // seta apontando pra máquina quebrada mais próxima (guia o jogador)
+  let alvo = null, melhor = 1e9;
+  for (const m of sv.maquinas) if (m.estado === 'quebrada') { const d = dist2(m.x, m.y, sv.x, sv.y); if (d < melhor) { melhor = d; alvo = m; } }
+  if (alvo) { const ang = Math.atan2(alvo.y - sv.y, alvo.x - sv.x);
+    const ax = W / 2 + Math.cos(ang) * 80, ay = H / 2 + Math.sin(ang) * 80;
+    ctx.save(); ctx.translate(ax, ay); ctx.rotate(ang);
+    ctx.fillStyle = 'rgba(255,180,60,' + (0.5 + pulso * 0.5).toFixed(2) + ')';
+    ctx.beginPath(); ctx.moveTo(16, 0); ctx.lineTo(-6, -9); ctx.lineTo(-6, 9); ctx.closePath(); ctx.fill();
+    ctx.restore(); }
+  ctx.textAlign = 'left';
 }
 
 function desenharPausaSv() {
@@ -5150,10 +5217,12 @@ function desenharFimSv() {
   const grande = MOBILE;
   const { x, y } = painel(grande ? 400 : 480, grande ? 300 : 320);
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#ff5a4a'; ctx.font = '800 ' + (grande ? 30 : 36) + 'px "Segoe UI", sans-serif';
-  ctx.fillText('💀 VOCÊ TOMBOU', W / 2, y + 56);
+  const porColapso = sv.motivoFim === 'colapso';
+  ctx.fillStyle = '#ff5a4a'; ctx.font = '800 ' + (grande ? 28 : 34) + 'px "Segoe UI", sans-serif';
+  ctx.fillText(porColapso ? '🏭 SAFRA PERDIDA' : '💀 VOCÊ TOMBOU', W / 2, y + 56);
   ctx.fillStyle = '#cfe0b8'; ctx.font = '700 13px "Courier New", monospace';
-  ctx.fillText('o canavial te engoliu na horda ' + sv.horda, W / 2, y + 84);
+  ctx.fillText(porColapso ? 'todas as máquinas pararam na horda ' + sv.horda
+                          : 'o canavial te engoliu na horda ' + sv.horda, W / 2, y + 84);
   ctx.font = (grande ? 54 : 64) + 'px sans-serif'; ctx.fillText('🌾', W / 2, y + (grande ? 150 : 164));
   const linhas = [
     ['🌊 Hordas sobrevividas', '' + (sv.horda - 1), '#8fd6e8'],
@@ -7982,7 +8051,10 @@ const AJUDA_PAGS = [
     'campo frio) e CLIMA próprio: chuva deixa o chão molhado e',
     'você mais lento, nevasca e ventania também atrapalham.',
     'Use o MINIMAPA (canto) para achar as máquinas paradas 🔴',
-    'e o botão ⏸ para pausar. Parafusos no chão curam um pouco.',
+    'e o botão ⏸ para pausar. ATENÇÃO: se TODAS as máquinas',
+    'quebrarem ao mesmo tempo, você tem 30s para religar pelo',
+    'menos uma — senão a safra é perdida e é game over!',
+    'Parafusos no chão curam um pouco.',
   ]},
   { t: '🔧 MECÂNICO DE CAMPO (novo modo)', l: [
     'Dirija o CAMINHÃO-OFICINA e mantenha a safra viva (06:00→22:00)!',
@@ -8495,7 +8567,7 @@ globalThis.__T = {
          iniciarSobreviv, entrarSobreviv, atualizarSobreviv, prepararHordaSv, svComecarHorda, renderSobreviv,
          spawnBichoSv, svDanoInimigo, svDanoJogador, gerarUpgradesSv, aplicarUpgradeSv,
          gerarMaquinasSv, atualizarMaquinasSv, maquinaConsertavel, comprarUpgradeSv, fecharLojaSv,
-         sortearAmbienteSv, fazerChaoSv, atualizarClimaSv, SV_BIOMAS, SV_CLIMAS,
+         sortearAmbienteSv, fazerChaoSv, atualizarClimaSv, SV_BIOMAS, SV_CLIMAS, desenharColapsoSv,
          svFimSobreviv, moverJogadorSv, SV_ARMAS, SV_BICHOS, SV_CORES, construirAvatar,
          iniciarSurvivor, atualizarSurvivor, criarInimigo, criarBoss, ganharXP,
          abrirEscolha, escolherMelhoria, fimSurvivor, spawnInimigo,
