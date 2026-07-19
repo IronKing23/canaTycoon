@@ -211,6 +211,7 @@ const CFG = {
   DIAS_PADRAO: 2, DIAS_MAX: 5,        // ciclo de safra escolhido no início
   ZOOM_MOBILE: 1.5,                  // câmera dá zoom no celular (tudo maior)
   SV_VEL: 200, SV_HP: 100, SV_RAIO: 13, CHAVE_SV: 'canaTycoon_survRec',   // sobrevivência de horda
+  SV_MAQ_CONSERTO: 2.2, SV_MAQ_RAIO: 46,   // segundos p/ consertar + raio de interação com máquina
   SURV_HP: 100, SURV_VEL: 178, SURV_IFRAME: 0.7, SURV_MAG: 74, SURV_MAXMOB: 190,
   SURV_CRIT: 0.16, SURV_CRIT_MULT: 2.2,
   MEC_GRANA_INI: 1500, MEC_EMERG_MULT: 1.8, MEC_VEL: 190, CHAVE_MEC: 'canaTycoon_mecRank',
@@ -3969,11 +3970,16 @@ function iniciarSobreviv(corIdx) {
     armas: [{ id: 'chave', nivel: 1 }],                          // começa com chave inglesa (corpo-a-corpo giratória)
     atkT: 0, invT: 0, dano: 0, tempo: 0,
     escudo: 0, escudoMax: 0, regen: 0, velMul: 1, xp: 0, moedas: 0,
+    maquinas: [], consertando: null, consertoT: 0, bonusMaq: 0,
     upOpcoes: null, mestreAtual: null,
     recorde: rec, fim: false, fimT: 0, novoRec: false,
     joy: null, mira: { x: 1, y: 0 },
     cam: { x: MW / 2, y: MH / 2 }, shake: 0,
+    bioma: 'canavial', clima: 'limpo', gotas: [], flocos: [], ventoFase: 0,
   };
+  sortearAmbienteSv();
+  fazerChaoSv();
+  gerarMaquinasSv();
   prepararHordaSv(1);
   G.pausa = false;
 }
@@ -3994,10 +4000,10 @@ function svFlut(txt, x, y, cor) { const sv = G.sv; if (sv) sv.fluts.push({ txt, 
 
 // tipos de inimigo do modo sobrevivência
 const SV_BICHOS = {
-  capivara: { hp: 3, vel: 55, r: 14, dano: 8, cor: '#7a5a36', xp: 1, moeda: 2, vals: 'carga' },
-  porco:    { hp: 5, vel: 78, r: 15, dano: 12, cor: '#4a4038', xp: 2, moeda: 3, vals: 'investida' },
-  cobra:    { hp: 2, vel: 95, r: 9, dano: 6, cor: '#3a7a2e', xp: 1, moeda: 2, vals: 'serpente' },
-  alien:    { hp: 8, vel: 60, r: 16, dano: 15, cor: '#7a2ea8', xp: 4, moeda: 6, vals: 'atira' },
+  capivara: { hp: 3, vel: 55, r: 14, dano: 8, cor: '#7a5a36', xp: 1, moeda: 1, vals: 'carga' },
+  porco:    { hp: 5, vel: 78, r: 15, dano: 12, cor: '#4a4038', xp: 2, moeda: 1, vals: 'investida' },
+  cobra:    { hp: 2, vel: 95, r: 9, dano: 6, cor: '#3a7a2e', xp: 1, moeda: 1, vals: 'serpente' },
+  alien:    { hp: 8, vel: 60, r: 16, dano: 15, cor: '#7a2ea8', xp: 4, moeda: 3, vals: 'atira' },
 };
 
 function spawnBichoSv() {
@@ -4033,7 +4039,8 @@ function moverJogadorSv(dt) {
   sv.andando = mag > 0.15;
   if (sv.andando) {
     dx /= mag || 1; dy /= mag || 1;
-    const vel = CFG.SV_VEL * sv.velMul;
+    const lamaMul = (SV_CLIMAS[sv.clima] || {}).lama || 1;
+    const vel = CFG.SV_VEL * sv.velMul * lamaMul;               // terreno molhado/gelado deixa mais lento
     sv.x = clamp(sv.x + dx * vel * dt, 20, MW - 20);
     sv.y = clamp(sv.y + dy * vel * dt, 20, MH - 20);
     sv.frame += dt * 8; sv.mira = { x: dx, y: dy }; sv.olhar = dx < 0 ? -1 : dx > 0 ? 1 : sv.olhar;
@@ -4186,7 +4193,8 @@ function svDanoInimigo(e, dano, kx, ky) {
   for (let k = 0; k < 3; k++) sv.particulas.push({ tipo: 'sangue', x: e.x, y: e.y, vx: rand(-80, 80), vy: rand(-80, 80), t: 0, vida: 0.35, cor: e.cor });
   svFlut(dano | 0, e.x + rand(-6, 6), e.y - e.r - 4, '#fff');
   if (e.hp <= 0 && !e.morto) { e.morto = 0.35; sv.mortos++; sv.killsTot++; sv.dano += e.xp;
-    sv.moedas += e.moeda; sv.xp += e.xp;
+    if (Math.random() < 0.35) sv.moedas += e.moeda;   // nem todo bicho solta peça
+    sv.xp += e.xp;
     for (let k = 0; k < 8; k++) sv.particulas.push({ tipo: 'sangue', x: e.x, y: e.y, vx: rand(-140, 140), vy: rand(-140, 140), t: 0, vida: 0.5, cor: e.cor });
     if (Math.random() < 0.3) sv.drops.push({ tipo: 'parafuso', x: e.x, y: e.y, t: 0 });   // cura pequena
     if (SFX.praga) SFX.praga();
@@ -4237,9 +4245,190 @@ function atualizarDropsSv(dt) {
   }
 }
 
+// ═══════════════ TERRENO PROCEDURAL (biomas + climas por run) ═══════════════
+const SV_BIOMAS = {
+  canavial: { nome: 'Canavial', base: '#7d9450', mosq: ['#607438', '#8ca05c', '#46582a'], talhao: '#6f5f38', talhaoS: '#5c4e2e',
+              flores: ['#e88bb0', '#ffd94d', '#c98be8', '#f2f2f2'], capim: ['#5f7d3a', '#6c8c44'], ceu: [30, 40, 20] },
+  outono:   { nome: 'Outono', base: '#9a7a3e', mosq: ['#8a5e2e', '#b08040', '#6a4a22'], talhao: '#6a4e2a', talhaoS: '#523c1e',
+              flores: ['#e0702a', '#f0a030', '#c04020', '#d8b040'], capim: ['#a06830', '#b8823a'], ceu: [60, 44, 24] },
+  seco:     { nome: 'Terra Seca', base: '#b09858', mosq: ['#96784a', '#c0a868', '#7a6038'], talhao: '#8a7040', talhaoS: '#6e5a32',
+              flores: ['#d8b040', '#c09030', '#e0c060', '#a87828'], capim: ['#9a8248', '#b09a58'], ceu: [80, 66, 40] },
+  frio:     { nome: 'Campo Frio', base: '#7a8a80', mosq: ['#6a7a72', '#8a9a90', '#566058'], talhao: '#5a6058', talhaoS: '#464c46',
+              flores: ['#c0d0e0', '#e0f0f0', '#a0b8c8', '#d0e0e8'], capim: ['#6a8078', '#7a9088'], ceu: [40, 50, 58] },
+};
+const SV_CLIMAS = {
+  limpo:  { nome: 'Céu Limpo', chuva: 0, neve: 0, vento: 0.2, lama: 1.0, tint: null },
+  chuva:  { nome: 'Chuvoso', chuva: 1, neve: 0, vento: 0.5, lama: 0.72, tint: 'rgba(30,50,80,.18)' },   // lama: reduz velocidade
+  vento:  { nome: 'Ventania', chuva: 0, neve: 0, vento: 1.0, lama: 0.95, tint: 'rgba(120,110,70,.1)' },
+  frio:   { nome: 'Nevando', chuva: 0, neve: 1, vento: 0.6, lama: 0.85, tint: 'rgba(180,200,220,.14)' },
+};
+
+let SV_CHAO = null;                                            // terreno pré-desenhado da run
+
+function sortearAmbienteSv() {
+  const sv = G.sv;
+  const biomas = Object.keys(SV_BIOMAS), climas = Object.keys(SV_CLIMAS);
+  sv.bioma = escolha(biomas);
+  // clima combina com bioma às vezes (frio→nevando, seco→limpo/vento)
+  if (sv.bioma === 'frio') sv.clima = escolha(['frio', 'frio', 'chuva', 'vento']);
+  else if (sv.bioma === 'seco') sv.clima = escolha(['limpo', 'limpo', 'vento', 'vento']);
+  else if (sv.bioma === 'outono') sv.clima = escolha(['vento', 'vento', 'chuva', 'limpo']);
+  else sv.clima = escolha(['limpo', 'chuva', 'vento', 'limpo']);
+  sv.gotas = []; sv.flocos = [];                              // partículas de clima
+}
+
+function fazerChaoSv() {
+  const sv = G.sv, B = SV_BIOMAS[sv.bioma];
+  const [c, cc] = offscreen(MW, MH);
+  cc.fillStyle = B.base; cc.fillRect(0, 0, MW, MH);
+  // mosqueado
+  for (let i = 0; i < 5200; i++) { cc.fillStyle = escolha(B.mosq) + '';
+    cc.globalAlpha = 0.5; cc.fillRect(rand(0, MW) | 0, rand(0, MH) | 0, randi(2, 3), 2); }
+  cc.globalAlpha = 1;
+  // manchas orgânicas largas
+  for (let i = 0; i < 26; i++) { cc.fillStyle = 'rgba(60,60,40,.06)';
+    cc.beginPath(); cc.ellipse(rand(0, MW), rand(0, MH), rand(120, 320), rand(80, 200), rand(0, 3), 0, 7); cc.fill(); }
+  // talhões de terra arada espalhados (dão textura de plantação)
+  for (let t = 0; t < 6; t++) {
+    const w = rand(260, 360), h = rand(180, 240), x0 = rand(60, MW - w - 60), y0 = rand(60, MH - h - 60);
+    cc.fillStyle = B.talhaoS; cc.fillRect(x0 - 3, y0 - 3, w + 6, h + 6);
+    cc.fillStyle = B.talhao; cc.fillRect(x0, y0, w, h);
+    for (let cx2 = x0 + 6; cx2 < x0 + w; cx2 += 26) { cc.fillStyle = B.talhaoS; cc.fillRect(cx2, y0 + 3, 12, h - 6); }
+  }
+  // flores/detritos do bioma
+  for (let i = 0; i < 180; i++) { const x = rand(40, MW - 40), y = rand(40, MH - 40);
+    cc.fillStyle = escolha(B.flores);
+    cc.fillRect(x - 1, y - 3, 2, 2); cc.fillRect(x - 1, y + 1, 2, 2); cc.fillRect(x - 3, y - 1, 2, 2); cc.fillRect(x + 1, y - 1, 2, 2); }
+  // tufos de capim
+  for (let i = 0; i < 300; i++) { const x = rand(30, MW - 30), y = rand(30, MH - 30);
+    cc.strokeStyle = escolha(B.capim); cc.lineWidth = 1.5;
+    cc.beginPath(); cc.moveTo(x, y); cc.lineTo(x + rand(-3, 3), y - rand(4, 8)); cc.stroke(); }
+  // pedrisco
+  for (let i = 0; i < 110; i++) { cc.fillStyle = 'rgba(122,126,132,.5)'; cc.fillRect(rand(0, MW) | 0, rand(0, MH) | 0, 3, 2); }
+  // poças (só se chuvoso) desenhadas no chão
+  if (sv.clima === 'chuva') { for (let i = 0; i < 14; i++) { const x = rand(80, MW - 80), y = rand(80, MH - 80);
+    cc.fillStyle = 'rgba(40,60,80,.4)'; cc.beginPath(); cc.ellipse(x, y, rand(20, 50), rand(12, 26), 0, 0, 7); cc.fill();
+    cc.fillStyle = 'rgba(90,120,150,.3)'; cc.beginPath(); cc.ellipse(x - 4, y - 3, rand(8, 18), rand(5, 10), 0, 0, 7); cc.fill(); } }
+  // neve acumulada (se frio) — manchas brancas
+  if (sv.clima === 'frio') { for (let i = 0; i < 40; i++) { const x = rand(40, MW - 40), y = rand(40, MH - 40);
+    cc.fillStyle = 'rgba(230,240,245,.45)'; cc.beginPath(); cc.ellipse(x, y, rand(30, 80), rand(20, 50), rand(0, 3), 0, 7); cc.fill(); } }
+  // cerca ao redor
+  cc.fillStyle = 'rgba(40,40,30,.85)';
+  for (let x = 10; x < MW; x += 64) { cc.fillRect(x, 6, 5, 14); cc.fillRect(x, MH - 20, 5, 14); }
+  for (let y = 10; y < MH; y += 64) { cc.fillRect(6, y, 14, 5); cc.fillRect(MW - 20, y, 14, 5); }
+  cc.strokeStyle = 'rgba(40,40,30,.5)'; cc.lineWidth = 2; cc.strokeRect(11, 11, MW - 22, MH - 22);
+  SV_CHAO = c;
+}
+
+// ===== MÁQUINAS (colhedoras e tratores que trabalham e quebram) =====
+function gerarMaquinasSv() {
+  const sv = G.sv; sv.maquinas = [];
+  // 5 máquinas espalhadas em anel ao redor do centro, longe do spawn
+  const N = 5, cx = MW / 2, cy = MH / 2;
+  for (let i = 0; i < N; i++) {
+    const ang = (i / N) * 6.28 + rand(-0.3, 0.3);
+    const raio = rand(360, 620);
+    let x = clamp(cx + Math.cos(ang) * raio, 120, MW - 120);
+    let y = clamp(cy + Math.sin(ang) * raio, 120, MH - 120);
+    sv.maquinas.push({
+      tipo: i % 2 === 0 ? 'colhedora' : 'trator', x, y,
+      estado: 'ok',                      // ok | quebrada
+      frame: rand(0, 6.28), quebraT: rand(8, 20),   // tempo até quebrar
+      ang: rand(0, 6.28), fumaca: 0, alertaP: 0,
+    });
+  }
+}
+
+function atualizarMaquinasSv(dt) {
+  const sv = G.sv; if (!sv.vivo) return;
+  let okCount = 0;
+  for (const m of sv.maquinas) {
+    if (m.estado === 'ok') {
+      okCount++;
+      m.frame += dt;
+      // vagam devagar pelo canavial (simula trabalho), mudando de rumo às vezes
+      m.ang += Math.sin(m.frame * 0.4) * dt * 0.5;
+      m.x = clamp(m.x + Math.cos(m.ang) * 18 * dt, 90, MW - 90);
+      m.y = clamp(m.y + Math.sin(m.ang) * 18 * dt, 90, MH - 90);
+      // só quebram durante a horda (fora dela, a pausa é de "respiro")
+      if (sv.emHorda) { m.quebraT -= dt;
+        if (m.quebraT <= 0) { m.estado = 'quebrada'; m.fumaca = 0;
+          svFlut('⚠️ Máquina quebrou!', m.x, m.y - 40, '#ff9a3a'); if (SFX.alarme) SFX.alarme(); } }
+    } else {
+      m.fumaca += dt; m.alertaP += dt;
+    }
+  }
+  sv.maqOk = okCount;
+
+  // interação de conserto: jogador perto de uma máquina quebrada e parado
+  const alvo = maquinaConsertavel();
+  if (alvo) {
+    if (!sv.andando) {                                        // precisa estar parado pra consertar
+      sv.consertando = alvo; sv.consertoT += dt;
+      alvo.reparoP = clamp(sv.consertoT / CFG.SV_MAQ_CONSERTO, 0, 1);
+      if (sv.consertoT >= CFG.SV_MAQ_CONSERTO) {              // consertou!
+        alvo.estado = 'ok'; alvo.quebraT = rand(10, 24); alvo.reparoP = 0;
+        sv.consertando = null; sv.consertoT = 0;
+        const premio = 5 + Math.floor(sv.horda * 1.2);         // recompensa cresce devagar
+        sv.moedas += premio; sv.bonusMaq++;
+        svFlut('🔧 +' + premio + '🔩', alvo.x, alvo.y - 44, '#ffd94d');
+        for (let k = 0; k < 12; k++) sv.particulas.push({ tipo: 'sangue', x: alvo.x, y: alvo.y, vx: rand(-100, 100), vy: rand(-120, 40), t: 0, vida: 0.5, cor: '#ffd94d' });
+        if (SFX.reparo) SFX.reparo(); else if (SFX.vendona) SFX.vendona();
+      }
+    } else { sv.consertando = null; sv.consertoT = 0; }       // andou: cancela
+  } else { sv.consertando = null; sv.consertoT = 0; }
+}
+
+function atualizarClimaSv(dt) {
+  const sv = G.sv, C = SV_CLIMAS[sv.clima] || {};
+  sv.ventoFase = (sv.ventoFase || 0) + dt;
+  const ventoX = Math.cos(sv.ventoFase * 0.3) * C.vento * 120;
+  // CHUVA
+  if (C.chuva) {
+    while (sv.gotas.length < 90) sv.gotas.push({ x: rand(0, W), y: rand(-H, 0), v: rand(600, 900) });
+    for (const g of sv.gotas) { g.y += g.v * dt; g.x += ventoX * dt;
+      if (g.y > H) { g.y = rand(-40, 0); g.x = rand(-40, W); } }
+  } else if (sv.gotas.length) sv.gotas.length = 0;
+  // NEVE
+  if (C.neve) {
+    while (sv.flocos.length < 70) sv.flocos.push({ x: rand(0, W), y: rand(-H, 0), v: rand(50, 110), o: rand(0, 6.28), r: rand(1.5, 3.5) });
+    for (const f of sv.flocos) { f.y += f.v * dt; f.o += dt * 2; f.x += (Math.sin(f.o) * 20 + ventoX * 0.5) * dt;
+      if (f.y > H) { f.y = rand(-20, 0); f.x = rand(0, W); } }
+  } else if (sv.flocos.length) sv.flocos.length = 0;
+}
+
+function desenharClimaSv() {
+  const sv = G.sv, C = SV_CLIMAS[sv.clima] || {};
+  // tint atmosférico
+  if (C.tint) { ctx.fillStyle = C.tint; ctx.fillRect(0, 0, W, H); }
+  // chuva (riscos diagonais)
+  if (C.chuva) { ctx.strokeStyle = 'rgba(160,190,230,.4)'; ctx.lineWidth = 1.5;
+    const vx = Math.cos(sv.ventoFase * 0.3) * (C.vento || 0) * 0.4;
+    for (const g of sv.gotas) { ctx.beginPath(); ctx.moveTo(g.x, g.y); ctx.lineTo(g.x - vx * 14, g.y + 14); ctx.stroke(); } }
+  // neve (flocos)
+  if (C.neve) { ctx.fillStyle = 'rgba(240,248,255,.85)';
+    for (const f of sv.flocos) { ctx.globalAlpha = 0.7; ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, 7); ctx.fill(); }
+    ctx.globalAlpha = 1; }
+  // vento (folhas/rajadas passando) — só quando vento forte
+  if ((C.vento || 0) >= 1) { ctx.fillStyle = sv.bioma === 'outono' ? 'rgba(200,120,40,.5)' : 'rgba(200,210,160,.35)';
+    const t = sv.tempo;
+    for (let i = 0; i < 8; i++) { const y = (i * 90 + t * 200) % (H + 40) - 20;
+      const x = (i * 173 + t * 400) % (W + 60) - 30;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(t * 3 + i); ctx.fillRect(-4, -1.5, 8, 3); ctx.restore(); } }
+}
+
+function maquinaConsertavel() {
+  const sv = G.sv;
+  for (const m of sv.maquinas) if (m.estado === 'quebrada') {
+    if (dist2(m.x, m.y, sv.x, sv.y) < CFG.SV_MAQ_RAIO * CFG.SV_MAQ_RAIO) return m;
+  }
+  return null;
+}
+
 // ===== SISTEMA DE UPGRADES (os mecânicos-mestres presenteiam entre hordas) =====
 function gerarUpgradesSv() {
   const sv = G.sv; const opts = [];
+  const custoBase = 12 + sv.horda * 4;                         // preço sobe firme com a horda
   const temArma = id => sv.armas.find(a => a.id === id);
   const poolArmas = [];
   // upgrade de arma existente (subir nível) ou nova arma
@@ -4269,23 +4458,45 @@ function gerarUpgradesSv() {
   // completa até 3 se algum bucket estava vazio
   const todas = [...defesas, ...vidas];
   while (opts.length < 3 && todas.length) opts.push(todas.splice(randi(0, todas.length - 1), 1)[0]);
-  return opts.slice(0, 3);
+  const finais = opts.slice(0, 3);
+  // define custo por opção: arma nova é mais cara, cura é barata
+  finais.forEach((o, i) => {
+    let mult = 1;
+    if (o.tipo === 'armaNova') mult = 2.0;
+    else if (o.tipo === 'armaUp') mult = 1.4;
+    else if (o.tipo === 'hpMax' || o.tipo === 'escudo') mult = 1.5;
+    else if (o.tipo === 'cura' || o.tipo === 'iman') mult = 0.8;
+    o.custo = Math.round(custoBase * mult * (1 + i * 0.2));
+    o.comprado = false;
+  });
+  return finais;
 }
 
-function aplicarUpgradeSv(op) {
+function comprarUpgradeSv(op) {
   const sv = G.sv;
+  if (op.comprado) return;                                     // já comprou esta
+  if (sv.moedas < op.custo) { if (SFX.multa) SFX.multa(); svFlut('sem 🔩 suficiente!', W / 2, H / 2, '#ff5a4a'); return; }
+  sv.moedas -= op.custo; op.comprado = true;
   if (op.tipo === 'armaUp') { const a = sv.armas.find(x => x.id === op.armaId); if (a) a.nivel++; }
-  else if (op.tipo === 'armaNova') { sv.armas.push({ id: op.armaId, nivel: 1, t: 0 }); }
+  else if (op.tipo === 'armaNova') { if (!sv.armas.find(x => x.id === op.armaId)) sv.armas.push({ id: op.armaId, nivel: 1, t: 0 }); }
   else if (op.tipo === 'escudo') { sv.escudoMax += 30; sv.escudo = sv.escudoMax; }
   else if (op.tipo === 'regen') { sv.regen += 1; }
   else if (op.tipo === 'vel') { sv.velMul += 0.12; }
   else if (op.tipo === 'hpMax') { sv.hpMax += 25; sv.hp = sv.hpMax; }
   else if (op.tipo === 'cura') { sv.hp = sv.hpMax; }
   else if (op.tipo === 'iman') { sv.imanMul = (sv.imanMul || 1) + 0.6; }
-  sv.upOpcoes = null; sv.mestreAtual = null;
-  prepararHordaSv(sv.horda + 1);
   if (SFX.vendona) SFX.vendona();
 }
+
+function fecharLojaSv() {                                      // botão "continuar": avança a horda
+  const sv = G.sv;
+  if (sv.moedas > 0) svFlut('💰 ' + sv.moedas + '🔩 guardadas p/ próxima!', W / 2, H / 2, '#ffd94d');
+  sv.upOpcoes = null; sv.mestreAtual = null;
+  prepararHordaSv(sv.horda + 1);
+}
+
+// compat: aplicarUpgradeSv agora compra e fecha (usado em testes/atalhos)
+function aplicarUpgradeSv(op) { comprarUpgradeSv(op); fecharLojaSv(); }
 
 function svFimSobreviv() {
   const sv = G.sv; if (sv.fim) return;
@@ -4315,6 +4526,8 @@ function atualizarSobreviv(dt) {
   atualizarBalasSv(dt);
   atualizarInimigosSv(dt);
   atualizarDropsSv(dt);
+  atualizarMaquinasSv(dt);
+  atualizarClimaSv(dt);
   // partículas e fluts
   for (let i = sv.particulas.length - 1; i >= 0; i--) { const p = sv.particulas[i]; p.t += dt;
     if (p.vx !== undefined) { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.9; p.vy *= 0.9; }
@@ -4360,7 +4573,8 @@ function renderSobreviv() {
   ctx.scale(Z, Z);
   ctx.translate(-camx, -camy);
 
-  if (CHAO) ctx.drawImage(CHAO, 0, 0);
+  if (SV_CHAO) ctx.drawImage(SV_CHAO, 0, 0);
+  else if (CHAO) ctx.drawImage(CHAO, 0, 0);
   else { ctx.fillStyle = '#3a5a28'; ctx.fillRect(0, 0, MW, MH); }
 
   // poças de óleo (arma) — desenha primeiro (chão)
@@ -4388,10 +4602,12 @@ function renderSobreviv() {
   // ordena inimigos + jogador por Y (profundidade top-down)
   const desenhaveis = [];
   for (const e of sv.inimigos) desenhaveis.push({ y: e.y, tipo: 'inim', e });
+  for (const m of sv.maquinas) desenhaveis.push({ y: m.y, tipo: 'maq', m });
   desenhaveis.push({ y: sv.y, tipo: 'player' });
   desenhaveis.sort((a, b) => a.y - b.y);
   for (const d of desenhaveis) {
     if (d.tipo === 'inim') desenharBichoSv(d.e);
+    else if (d.tipo === 'maq') desenharMaquinaSv(d.m);
     else desenharAvatarSv();
   }
 
@@ -4423,6 +4639,8 @@ function renderSobreviv() {
 
   ctx.restore();
 
+  desenharClimaSv();
+
   // escurecimento leve nas bordas (foco no centro)
   const vg = ctx.createRadialGradient(W / 2, H / 2, H * 0.4, W / 2, H / 2, H * 0.85);
   vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.4)'); ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
@@ -4431,8 +4649,79 @@ function renderSobreviv() {
   if (sv.invT > 0.4) { ctx.fillStyle = 'rgba(200,30,20,' + ((sv.invT - 0.4) * 0.6).toFixed(3) + ')'; ctx.fillRect(0, 0, W, H); }
 
   desenharHUDSv();
+  if (G.pausa && !sv.upOpcoes && !sv.fim) desenharPausaSv();
   if (sv.upOpcoes) desenharUpgradeSv();
   if (sv.fim) desenharFimSv();
+}
+
+function desenharPausaSv() {
+  const sv = G.sv, grande = MOBILE;
+  ctx.fillStyle = 'rgba(6,10,14,.82)'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd94d'; ctx.font = '800 ' + (grande ? 34 : 44) + 'px "Segoe UI", sans-serif';
+  ctx.fillText('⏸ PAUSADO', W / 2, H / 2 - (grande ? 60 : 76));
+  // resumo rápido
+  ctx.fillStyle = '#cfe0b8'; ctx.font = '700 ' + (grande ? 13 : 15) + 'px "Courier New", monospace';
+  const nOk = sv.maquinas.filter(m => m.estado === 'ok').length;
+  ctx.fillText('Horda ' + sv.horda + '  ·  ☠ ' + sv.killsTot + '  ·  🔩 ' + sv.moedas, W / 2, H / 2 - (grande ? 24 : 32));
+  ctx.fillText('🚜 ' + nOk + '/' + sv.maquinas.length + ' máquinas ok  ·  ⏱ ' + mmss(Math.floor(sv.tempo)), W / 2, H / 2 - (grande ? 2 : 8));
+  // botão continuar
+  const bw = grande ? 200 : 240, bx = W / 2 - bw / 2, by = H / 2 + (grande ? 24 : 30);
+  ctx.fillStyle = '#2e8a3a'; rr(bx, by, bw, grande ? 40 : 46, 10); ctx.fill();
+  ctx.strokeStyle = '#5ae06a'; ctx.lineWidth = 2; rr(bx, by, bw, grande ? 40 : 46, 10); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = '800 ' + (grande ? 16 : 18) + 'px "Segoe UI", sans-serif';
+  ctx.fillText('▶ CONTINUAR', W / 2, by + (grande ? 26 : 30));
+  botoesTela.push({ x: bx, y: by, w: bw, h: grande ? 40 : 46, cb: () => { G.pausa = false; } });
+  // botão sair pro menu
+  const by2 = by + (grande ? 50 : 58);
+  ctx.fillStyle = 'rgba(60,40,40,.9)'; rr(bx, by2, bw, grande ? 34 : 38, 8); ctx.fill();
+  ctx.strokeStyle = 'rgba(200,120,120,.6)'; ctx.lineWidth = 1.5; rr(bx, by2, bw, grande ? 34 : 38, 8); ctx.stroke();
+  ctx.fillStyle = '#e0b0b0'; ctx.font = '700 ' + (grande ? 13 : 14) + 'px "Segoe UI", sans-serif';
+  ctx.fillText('🏠 SAIR PARA O MENU', W / 2, by2 + (grande ? 22 : 25));
+  botoesTela.push({ x: bx, y: by2, w: bw, h: grande ? 34 : 38, cb: () => { G.pausa = false; G.fase = 'menu'; } });
+  ctx.textAlign = 'left';
+}
+
+function desenharMaquinaSv(m) {
+  const sv = G.sv, quebrada = m.estado === 'quebrada';
+  const spr = (m.tipo === 'trator' ? SPR.trator : SPR.colhedora);
+  const fr = quebrada ? 0 : Math.floor(m.frame * 6) % 2;
+  // sombra
+  ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.beginPath(); ctx.ellipse(m.x, m.y + 12, 30, 11, 0, 0, 7); ctx.fill();
+  ctx.save(); ctx.translate(m.x, m.y); ctx.rotate(Math.sin(m.ang) * 0.15);
+  if (quebrada) {
+    // tremor sutil + tom acinzentado (parada)
+    ctx.translate(rand(-1, 1), rand(-1, 1));
+  }
+  ctx.drawImage(spr[fr], -28, -18);
+  ctx.restore();
+
+  if (quebrada) {
+    // FUMAÇA subindo
+    for (let k = 0; k < 3; k++) { const ph = (m.fumaca * 1.5 + k * 0.6) % 1.5;
+      const fx = m.x + Math.sin(m.fumaca * 2 + k) * 6, fy = m.y - 14 - ph * 34;
+      ctx.fillStyle = 'rgba(60,60,60,' + (0.4 * (1 - ph / 1.5)).toFixed(2) + ')';
+      ctx.beginPath(); ctx.arc(fx, fy, 4 + ph * 8, 0, 7); ctx.fill(); }
+    // ícone de alerta pulsante acima
+    const pul = 0.7 + 0.3 * Math.sin(m.alertaP * 6);
+    ctx.globalAlpha = pul;
+    ctx.font = '20px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('🔧', m.x, m.y - 40);
+    ctx.globalAlpha = 1;
+    // seta/aro indicando que dá pra consertar (se o jogador estiver perto)
+    if (dist2(m.x, m.y, sv.x, sv.y) < 200 * 200) {
+      ctx.strokeStyle = 'rgba(255,217,77,' + (pul * 0.7).toFixed(2) + ')'; ctx.lineWidth = 2;
+      ctx.setLineDash([6, 5]); ctx.beginPath(); ctx.arc(m.x, m.y, CFG.SV_MAQ_RAIO, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    }
+    // barra de progresso do conserto (quando este é o alvo sendo consertado)
+    if (sv.consertando === m && m.reparoP > 0) {
+      const bw = 46, by = m.y - 34;
+      ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(m.x - bw / 2, by, bw, 6);
+      ctx.fillStyle = '#ffd94d'; ctx.fillRect(m.x - bw / 2, by, bw * m.reparoP, 6);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(m.x - bw / 2, by, bw, 6);
+    }
+  }
+  ctx.textAlign = 'left';
 }
 
 function desenharAvatarSv() {
@@ -4540,6 +4829,13 @@ function desenharHUDSv() {
   ctx.fillStyle = '#fff'; ctx.font = '700 ' + (grande ? 13 : 12) + 'px "Courier New", monospace'; ctx.textAlign = 'center';
   ctx.fillText(Math.ceil(sv.hp) + ' / ' + sv.hpMax + (sv.escudo > 0 ? '  🛡️' + Math.ceil(sv.escudo) : ''), bx + bw / 2, by + bh - 4);
 
+  // badge de bioma + clima (abaixo da barra de vida)
+  const emojiClima = { limpo: '☀️', chuva: '🌧️', vento: '🍂', frio: '❄️' }[sv.clima] || '';
+  const nomeB = (SV_BIOMAS[sv.bioma] || {}).nome || '', nomeC = (SV_CLIMAS[sv.clima] || {}).nome || '';
+  ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(10,14,8,.7)'; rr(bx, by + bh + 4, grande ? 170 : 190, 18, 4); ctx.fill();
+  ctx.fillStyle = '#cfe0b8'; ctx.font = '700 10px "Courier New", monospace';
+  ctx.fillText(emojiClima + ' ' + nomeB + ' · ' + nomeC, bx + 6, by + bh + 17);
+
   // horda + progresso (topo-centro)
   ctx.textAlign = 'center';
   ctx.fillStyle = 'rgba(10,14,8,.8)'; rr(W / 2 - 90, 12, 180, grande ? 40 : 34, 6); ctx.fill();
@@ -4550,6 +4846,21 @@ function desenharHUDSv() {
     ctx.fillText('faltam ' + restam + ' bichos', W / 2, grande ? 48 : 42); }
   else if (!sv.upOpcoes) { ctx.fillStyle = '#8fd6e8'; ctx.font = '700 11px "Courier New", monospace';
     ctx.fillText('próxima em ' + Math.ceil(sv.entreHordas) + 's', W / 2, grande ? 48 : 42); }
+
+  // máquinas funcionando (indicador central, abaixo da horda)
+  const nOk = sv.maquinas.filter(m => m.estado === 'ok').length, nTot = sv.maquinas.length;
+  const nQ = nTot - nOk;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = nQ > 0 ? '#ff9a3a' : '#7fe36a'; ctx.font = '700 11px "Courier New", monospace';
+  ctx.fillText('🚜 ' + nOk + '/' + nTot + ' ok' + (nQ > 0 ? '  ⚠️ ' + nQ + ' parada' + (nQ > 1 ? 's' : '') : ''), W / 2, grande ? 62 : 56);
+
+  // botão de pausa (canto superior direito)
+  const pb = grande ? 42 : 34, ppx = W - pb - 10, ppy = grande ? 54 : 50;
+  ctx.fillStyle = 'rgba(18,26,14,.85)'; rr(ppx, ppy, pb, pb, 6); ctx.fill();
+  ctx.strokeStyle = 'rgba(220,230,200,.5)'; ctx.lineWidth = 2; rr(ppx, ppy, pb, pb, 6); ctx.stroke();
+  ctx.fillStyle = '#eef2e0'; ctx.font = '700 ' + (grande ? 20 : 16) + 'px "Courier New", monospace'; ctx.textAlign = 'center';
+  ctx.fillText(G.pausa ? '▶' : '⏸', ppx + pb / 2, ppy + pb / 2 + (grande ? 7 : 6));
+  if (!sv.fim && !sv.upOpcoes) botoesTela.push({ x: ppx, y: ppy, w: pb, h: pb, cb: () => { G.pausa = !G.pausa; } });
 
   // relógio + kills + moedas (topo-direita)
   ctx.textAlign = 'right'; ctx.fillStyle = '#cfe0b8'; ctx.font = '700 12px "Courier New", monospace';
@@ -4576,52 +4887,119 @@ function desenharHUDSv() {
   }
   if (grande) { ctx.fillStyle = 'rgba(255,255,255,.25)'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
     ctx.fillText('arraste para mover', W / 2, H - 8); }
+  desenharMinimapaSv();
+  // dica de conserto (quando há máquina quebrada perto e o jogador não está consertando)
+  const perto = maquinaConsertavel();
+  if (perto && sv.andando) { ctx.fillStyle = '#ffd94d'; ctx.font = '700 13px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('⏸ PARE em cima da máquina para consertar', W / 2, H - (grande ? 26 : 20)); }
+  else if (sv.consertando) { ctx.fillStyle = '#ffd94d'; ctx.font = '700 13px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('🔧 consertando... segure firme!', W / 2, H - (grande ? 26 : 20)); }
   ctx.textAlign = 'left';
+}
+
+function desenharMinimapaSv() {
+  const sv = G.sv, grande = MOBILE;
+  const mmW = grande ? 96 : 120, mmH = mmW * (MH / MW);        // proporção do mundo
+  const ox = W - mmW - 10, oy = H - mmH - 10;
+  // fundo
+  ctx.fillStyle = 'rgba(8,12,8,.72)'; rr(ox - 3, oy - 3, mmW + 6, mmH + 6, 5); ctx.fill();
+  ctx.strokeStyle = 'rgba(160,200,140,.5)'; ctx.lineWidth = 1.5; rr(ox - 3, oy - 3, mmW + 6, mmH + 6, 5); ctx.stroke();
+  const sx = mmW / MW, sy = mmH / MH;
+  const px = x => ox + x * sx, py = y => oy + y * sy;
+  // máquinas (verde=ok, vermelho piscando=quebrada)
+  const pisca = 0.5 + 0.5 * Math.sin(sv.tempo * 6);
+  for (const m of sv.maquinas) {
+    if (m.estado === 'quebrada') { ctx.fillStyle = 'rgba(255,80,50,' + (0.4 + pisca * 0.6).toFixed(2) + ')';
+      ctx.beginPath(); ctx.arc(px(m.x), py(m.y), 4, 0, 7); ctx.fill();
+      // anelzinho pulsante pra chamar atenção
+      ctx.strokeStyle = 'rgba(255,180,60,' + (pisca * 0.8).toFixed(2) + ')'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(px(m.x), py(m.y), 4 + pisca * 3, 0, 7); ctx.stroke();
+    } else { ctx.fillStyle = '#5ae06a'; ctx.beginPath(); ctx.arc(px(m.x), py(m.y), 2.5, 0, 7); ctx.fill(); }
+  }
+  // inimigos (pontinhos vermelhos pequenos)
+  ctx.fillStyle = 'rgba(230,90,70,.7)';
+  for (const e of sv.inimigos) { if (e.morto) continue; ctx.fillRect(px(e.x) - 1, py(e.y) - 1, 2, 2); }
+  // jogador (seta/ponto branco com direção)
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(px(sv.x), py(sv.y), 3, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#2e6bc0'; ctx.lineWidth = 1; ctx.stroke();
+  // rótulo
+  ctx.fillStyle = 'rgba(200,220,180,.6)'; ctx.font = '700 8px "Courier New", monospace'; ctx.textAlign = 'left';
+  ctx.fillText('MAPA', ox, oy - 6);
 }
 
 function desenharUpgradeSv() {
   const sv = G.sv, m = sv.mestreAtual;
-  ctx.fillStyle = 'rgba(6,10,14,.88)'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(6,10,14,.9)'; ctx.fillRect(0, 0, W, H);
   const grande = MOBILE;
   // cabeçalho: o mestre
   ctx.textAlign = 'center';
-  ctx.font = (grande ? 46 : 54) + 'px sans-serif';
-  ctx.fillText(m.icone, W / 2, grande ? 70 : 84);
-  ctx.fillStyle = '#ffd94d'; ctx.font = '800 ' + (grande ? 18 : 22) + 'px "Segoe UI", sans-serif';
-  ctx.fillText('MESTRE ' + m.nome.toUpperCase(), W / 2, grande ? 100 : 118);
-  ctx.fillStyle = '#cfe0b8'; ctx.font = '600 ' + (grande ? 12 : 14) + 'px "Segoe UI", sans-serif';
-  ctx.fillText('venceu a horda ' + sv.horda + '! escolha uma bênção:', W / 2, grande ? 122 : 142);
+  ctx.font = (grande ? 40 : 48) + 'px sans-serif';
+  ctx.fillText(m.icone, W / 2, grande ? 56 : 68);
+  ctx.fillStyle = '#ffd94d'; ctx.font = '800 ' + (grande ? 17 : 21) + 'px "Segoe UI", sans-serif';
+  ctx.fillText('OFICINA DO MESTRE ' + m.nome.toUpperCase(), W / 2, grande ? 82 : 98);
+  ctx.fillStyle = '#cfe0b8'; ctx.font = '600 ' + (grande ? 11 : 13) + 'px "Segoe UI", sans-serif';
+  ctx.fillText('horda ' + sv.horda + ' vencida! compre o que quiser:', W / 2, grande ? 100 : 118);
+  // saldo de moedas em destaque
+  ctx.fillStyle = 'rgba(240,200,20,.15)'; rr(W / 2 - 70, (grande ? 108 : 126), 140, (grande ? 24 : 28), 6); ctx.fill();
+  ctx.strokeStyle = '#ffd94d'; ctx.lineWidth = 1.5; rr(W / 2 - 70, (grande ? 108 : 126), 140, (grande ? 24 : 28), 6); ctx.stroke();
+  ctx.fillStyle = '#ffd94d'; ctx.font = '800 ' + (grande ? 15 : 17) + 'px "Courier New", monospace';
+  ctx.fillText('🔩 ' + sv.moedas + ' peças', W / 2, (grande ? 125 : 145));
 
   // 3 cards
   const n = sv.upOpcoes.length;
-  const cw = grande ? 150 : 210, ch = grande ? 190 : 220, gap = grande ? 12 : 24;
+  const cw = grande ? 148 : 200, ch = grande ? 172 : 196, gap = grande ? 12 : 22;
   const totalW = n * cw + (n - 1) * gap;
-  const x0 = (W - totalW) / 2, y0 = grande ? 150 : 180;
+  const x0 = (W - totalW) / 2, y0 = grande ? 142 : 166;
   const coresU = { armaUp: '#e0902e', armaNova: '#e0902e', escudo: '#5a9ae0', regen: '#5ae08a', vel: '#5ae08a', hpMax: '#e05a6a', cura: '#e05a6a', iman: '#c05ae0' };
   for (let i = 0; i < n; i++) {
     const op = sv.upOpcoes[i], cx = x0 + i * (cw + gap);
     const cor = coresU[op.tipo] || '#f0c814';
-    ctx.fillStyle = 'rgba(18,26,14,.95)'; rr(cx, y0, cw, ch, 10); ctx.fill();
-    ctx.strokeStyle = cor; ctx.lineWidth = 3; rr(cx, y0, cw, ch, 10); ctx.stroke();
+    const podePagar = sv.moedas >= op.custo;
+    const comprado = op.comprado;
+    // fundo (escurece se comprado ou sem grana)
+    ctx.globalAlpha = comprado ? 0.5 : 1;
+    ctx.fillStyle = comprado ? 'rgba(30,50,30,.95)' : 'rgba(18,26,14,.96)'; rr(cx, y0, cw, ch, 10); ctx.fill();
+    ctx.strokeStyle = comprado ? '#5ae06a' : (podePagar ? cor : '#5a4a3a'); ctx.lineWidth = 3; rr(cx, y0, cw, ch, 10); ctx.stroke();
     // ícone
-    ctx.font = (grande ? 44 : 54) + 'px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText(op.ico, cx + cw / 2, y0 + (grande ? 64 : 76));
+    ctx.font = (grande ? 38 : 46) + 'px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(op.ico, cx + cw / 2, y0 + (grande ? 52 : 62));
     // categoria
     const catTxt = (op.tipo.startsWith('arma')) ? 'ARMA' : (op.tipo === 'escudo' || op.tipo === 'regen' || op.tipo === 'vel') ? 'PROTEÇÃO' : 'VIDA';
-    ctx.fillStyle = cor; ctx.font = '800 10px "Courier New", monospace';
-    ctx.fillText(catTxt, cx + cw / 2, y0 + (grande ? 86 : 100));
+    ctx.fillStyle = cor; ctx.font = '800 9px "Courier New", monospace';
+    ctx.fillText(catTxt, cx + cw / 2, y0 + (grande ? 70 : 82));
     // título
-    ctx.fillStyle = '#fff'; ctx.font = '800 ' + (grande ? 13 : 15) + 'px "Segoe UI", sans-serif';
-    wrapTexto(op.txt, cx + cw / 2, y0 + (grande ? 108 : 124), cw - 16, grande ? 16 : 18);
+    ctx.fillStyle = '#fff'; ctx.font = '800 ' + (grande ? 12 : 14) + 'px "Segoe UI", sans-serif';
+    wrapTexto(op.txt, cx + cw / 2, y0 + (grande ? 90 : 104), cw - 14, grande ? 15 : 17);
     // descrição
-    ctx.fillStyle = '#b8c4a8'; ctx.font = '600 ' + (grande ? 10 : 11) + 'px "Segoe UI", sans-serif';
-    wrapTexto(op.desc, cx + cw / 2, y0 + (grande ? 148 : 166), cw - 20, grande ? 13 : 14);
-    botoesTela.push({ x: cx, y: y0, w: cw, h: ch, cb: () => aplicarUpgradeSv(op) });
+    ctx.fillStyle = '#b8c4a8'; ctx.font = '600 ' + (grande ? 9 : 10) + 'px "Segoe UI", sans-serif';
+    wrapTexto(op.desc, cx + cw / 2, y0 + (grande ? 122 : 138), cw - 18, grande ? 12 : 13);
+    ctx.globalAlpha = 1;
+    // rodapé: preço / botão comprar
+    const py = y0 + ch - (grande ? 30 : 34);
+    if (comprado) {
+      ctx.fillStyle = '#5ae06a'; ctx.font = '800 ' + (grande ? 13 : 15) + 'px "Segoe UI", sans-serif';
+      ctx.fillText('✅ COMPRADO', cx + cw / 2, py + (grande ? 20 : 22));
+    } else {
+      const bcor = podePagar ? cor : '#3a3228';
+      ctx.fillStyle = bcor; rr(cx + 10, py, cw - 20, grande ? 24 : 26, 6); ctx.fill();
+      ctx.fillStyle = podePagar ? '#1a1408' : '#7a6a55'; ctx.font = '800 ' + (grande ? 12 : 14) + 'px "Courier New", monospace';
+      ctx.fillText('🔩 ' + op.custo, cx + cw / 2, py + (grande ? 16 : 18));
+      if (podePagar) botoesTela.push({ x: cx + 10, y: py, w: cw - 20, h: grande ? 24 : 26, cb: () => comprarUpgradeSv(op) });
+    }
   }
+
+  // botão CONTINUAR (avança a horda)
+  const by = y0 + ch + (grande ? 14 : 20);
+  ctx.fillStyle = '#2e8a3a'; rr(W / 2 - 110, by, 220, grande ? 38 : 42, 10); ctx.fill();
+  ctx.strokeStyle = '#5ae06a'; ctx.lineWidth = 2; rr(W / 2 - 110, by, 220, grande ? 38 : 42, 10); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = '800 ' + (grande ? 15 : 17) + 'px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('▶ PRÓXIMA HORDA', W / 2, by + (grande ? 25 : 27));
+  botoesTela.push({ x: W / 2 - 110, y: by, w: 220, h: grande ? 38 : 42, cb: () => fecharLojaSv() });
+  // dica sobre máquinas
+  ctx.fillStyle = 'rgba(255,255,255,.4)'; ctx.font = '600 ' + (grande ? 9 : 11) + 'px "Segoe UI", sans-serif';
+  ctx.fillText('💡 conserte máquinas 🚜 durante a horda para ganhar mais 🔩', W / 2, by + (grande ? 54 : 62));
   ctx.textAlign = 'left';
 }
-
-// helper: texto centralizado com quebra
 function wrapTexto(txt, cx, cy, maxW, lh) {
   const palavras = txt.split(' '); let linha = '', linhas = [];
   for (const p of palavras) { const teste = linha ? linha + ' ' + p : p;
@@ -7455,9 +7833,20 @@ const AJUDA_PAGS = [
     'Movimento: WASD ou setas (no celular, arraste pra andar).',
     'As armas atacam SOZINHAS — foque em desviar e posicionar.',
     'A cada horda vencida, um MESTRE (mecânico) te dá 3 opções',
-    'de bênção: nova arma, subir arma de nível, escudo, vida,',
-    'regeneração ou velocidade. Monte sua build e veja até que',
-    'horda você aguenta! Parafusos no chão curam um pouco.',
+    'de bênção na OFICINA — mas agora cada uma CUSTA 🔩 peças!',
+    'Como ganhar peças? Matando bichos e, principalmente,',
+    'CONSERTANDO MÁQUINAS 🚜. Colhedoras e tratores trabalham',
+    'pelo canavial e QUEBRAM durante as hordas (soltam fumaça).',
+    'Vá até a máquina parada e FIQUE PARADO em cima dela para',
+    'consertar — mas cuidado, você fica vulnerável aos bichos!',
+    'Quanto mais máquinas mantiver funcionando, mais peças',
+    'para gastar na oficina — mas os preços são altos, escolha',
+    'bem! O que não gastar fica guardado para a próxima horda.',
+    'Cada run tem um TERRENO diferente (canavial, outono, seca,',
+    'campo frio) e CLIMA próprio: chuva deixa o chão molhado e',
+    'você mais lento, nevasca e ventania também atrapalham.',
+    'Use o MINIMAPA (canto) para achar as máquinas paradas 🔴',
+    'e o botão ⏸ para pausar. Parafusos no chão curam um pouco.',
   ]},
   { t: '🔧 MECÂNICO DE CAMPO (novo modo)', l: [
     'Dirija o CAMINHÃO-OFICINA e mantenha a safra viva (06:00→22:00)!',
@@ -7969,6 +8358,8 @@ globalThis.__T = {
          MEC_DEFEITOS, MEC_PECAS, MEC_FERRAMENTAS, MEC_TALENTOS,
          iniciarSobreviv, entrarSobreviv, atualizarSobreviv, prepararHordaSv, svComecarHorda, renderSobreviv,
          spawnBichoSv, svDanoInimigo, svDanoJogador, gerarUpgradesSv, aplicarUpgradeSv,
+         gerarMaquinasSv, atualizarMaquinasSv, maquinaConsertavel, comprarUpgradeSv, fecharLojaSv,
+         sortearAmbienteSv, fazerChaoSv, atualizarClimaSv, SV_BIOMAS, SV_CLIMAS,
          svFimSobreviv, moverJogadorSv, SV_ARMAS, SV_BICHOS, SV_CORES, construirAvatar,
          iniciarSurvivor, atualizarSurvivor, criarInimigo, criarBoss, ganharXP,
          abrirEscolha, escolherMelhoria, fimSurvivor, spawnInimigo,
