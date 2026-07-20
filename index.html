@@ -213,6 +213,11 @@ const CFG = {
   SV_VEL: 200, SV_HP: 100, SV_RAIO: 13, CHAVE_SV: 'canaTycoon_survRec',   // sobrevivência de horda
   SV_MAQ_CONSERTO: 2.2, SV_MAQ_RAIO: 46,   // segundos p/ consertar + raio de interação com máquina
   SV_COLAPSO: 30,                          // prazo (s) p/ religar 1 máquina quando TODAS quebram
+  // ── combate estilo Souls ──
+  SV_STAMINA: 100, SV_ROLL_CUSTO: 34, SV_PARRY_CUSTO: 22,   // vigor máx + custos
+  SV_ROLL_DUR: 0.36, SV_ROLL_IFRAMES: 0.26, SV_ROLL_CD: 0.12, SV_ROLL_VEL: 560,  // rolamento
+  SV_PARRY_JANELA: 0.22, SV_PARRY_RECUP: 0.45, SV_PARRY_CD: 0.35,  // janela de aparo + punição por errar
+  SV_STUN_DUR: 1.6, SV_RIPOSTE_MULT: 6, SV_STAM_REGEN: 32,  // atordoamento + dano da execução + regen/s
   SURV_HP: 100, SURV_VEL: 178, SURV_IFRAME: 0.7, SURV_MAG: 74, SURV_MAXMOB: 190,
   SURV_CRIT: 0.16, SURV_CRIT_MULT: 2.2,
   MEC_GRANA_INI: 1500, MEC_EMERG_MULT: 1.8, MEC_VEL: 190, CHAVE_MEC: 'canaTycoon_mecRank',
@@ -477,6 +482,10 @@ const SFX = {
   alarme()  { beep(880, 880, 0.09, 'square', 0.2); beep(880, 880, 0.09, 'square', 0.2, 0.14); },
   reparo()  { ruido(0.05, 0.2, 3200); beep(500, 500, 0.05, 'square', 0.1, 0.06); ruido(0.05, 0.2, 3200, 0.12); },
   peca()    { beep(1040, 1040, 0.06, 'square', 0.14); beep(1560, 1560, 0.08, 'square', 0.12, 0.07); },
+  roll()    { ruido(0.16, 0.3, 1400); beep(300, 120, 0.14, 'sine', 0.12); },                      // whoosh do rolamento
+  parryTry(){ beep(1800, 1800, 0.03, 'square', 0.08); },                                          // tic: abriu a guarda
+  parry()   { ruido(0.06, 0.5, 6800); beep(2200, 2200, 0.1, 'square', 0.2); beep(3300, 2900, 0.14, 'triangle', 0.16, 0.03); beep(1100, 1100, 0.08, 'square', 0.12, 0.02); },  // CLANG!
+  critico() { beep(140, 60, 0.22, 'sawtooth', 0.3); ruido(0.12, 0.6, 2400); beep(1760, 880, 0.18, 'square', 0.16, 0.05); },  // execução
   spray()   { ruido(0.28, 0.22, 5200); ruido(0.18, 0.15, 6400, 0.1); },
   praga()   { for (let i = 0; i < 5; i++) beep(720 - i * 90, 640 - i * 90, 0.05, 'square', 0.12, i * 0.06);
               ruido(0.3, 0.12, 900, 0.1); },
@@ -4024,6 +4033,10 @@ function iniciarSobreviv(corIdx) {
     escudo: 0, escudoMax: 0, regen: 0, velMul: 1, xp: 0, moedas: 0,
     maquinas: [], consertando: null, consertoT: 0, bonusMaq: 0,
     colapso: false, colapsoT: 0, motivoFim: null,   // emergência: todas as máquinas paradas
+    stamina: CFG.SV_STAMINA, staminaMax: CFG.SV_STAMINA, stamRegenT: 0,   // ── combate Souls ──
+    rolando: 0, rolAng: 0, rolCd: 0, iframes: 0,          // rolamento + invencibilidade
+    parryT: 0, parryCd: 0, parryRecup: 0, parryFlash: 0,  // aparo (parry)
+    hitStop: 0, combos: 0, parries: 0,                    // hit-stop + estatísticas de estilo
     upOpcoes: null, mestreAtual: null,
     recorde: rec, fim: false, fimT: 0, novoRec: false,
     joy: null, mira: { x: 1, y: 0 },
@@ -4078,6 +4091,7 @@ function spawnBichoSv() {
     tipo, x, y, hp: Math.round(base.hp * escala), hpMax: Math.round(base.hp * escala),
     vel: base.vel, r: base.r, dano: base.dano, cor: base.cor, xp: base.xp, moeda: base.moeda,
     vals: base.vals, flash: 0, faseA: Math.random() * 6.28, atkT: 0, morto: 0, empurraX: 0, empurraY: 0,
+    stun: 0, windup: 0, preCarga: 0, bote: 0, marcado: false,   // ── combate Souls ──
   });
 }
 
@@ -4110,42 +4124,178 @@ function atualizarInimigosSv(dt) {
     const e = sv.inimigos[i];
     if (e.flash > 0) e.flash -= dt;
     if (e.morto > 0) { e.morto -= dt; if (e.morto <= 0) sv.inimigos.splice(i, 1); continue; }
-    e.faseA += dt * (3 + e.vel * 0.04);
     const dx = sv.x - e.x, dy = sv.y - e.y, dist = Math.hypot(dx, dy) || 1;
     const nx = dx / dist, ny = dy / dist;
-    // empurrão (knockback) decai
+    // empurrão (knockback) decai — acontece mesmo atordoado
     if (e.empurraX || e.empurraY) { e.x += e.empurraX * dt; e.y += e.empurraY * dt;
       e.empurraX *= 0.86; e.empurraY *= 0.86;
       if (Math.abs(e.empurraX) < 2) e.empurraX = 0; if (Math.abs(e.empurraY) < 2) e.empurraY = 0; }
+    // ── ATORDOADO (após parry): parado, vulnerável, esperando execução ──
+    if (e.stun > 0) { e.stun -= dt; e.faseA += dt * 8;         // treme/vê estrelas
+      e.x = clamp(e.x, 15, MW - 15); e.y = clamp(e.y, 15, MH - 15);
+      // se o jogador encostar num inimigo marcado → EXECUÇÃO (riposte)
+      if (e.marcado && dist < e.r + CFG.SV_RAIO + 6) svExecutar(e, nx, ny);
+      continue;                                                 // não persegue nem ataca enquanto atordoado
+    }
+    e.faseA += dt * (3 + e.vel * 0.04);
     let vel = e.vel;
-    // comportamentos
-    if (e.vals === 'investida') {                              // porco: investe em rajadas
+    // decai o telegraph visual
+    if (e.windup > 0) e.windup -= dt;
+    // comportamentos (com TELEGRAPH antes do golpe)
+    if (e.vals === 'investida') {                              // porco: recua e AVISA antes de investir
       e.atkT -= dt;
-      if (dist < 200 && e.atkT <= 0) { e.investindo = 0.5; e.atkT = 2.2; e.ivx = nx; e.ivy = ny; }
-      if (e.investindo > 0) { e.investindo -= dt; vel = e.vel * 3.2;
+      if (dist < 210 && e.atkT <= 0 && e.investindo <= 0 && e.preCarga <= 0) {
+        e.preCarga = 0.5; e.windup = 0.5; e.ivx = nx; e.ivy = ny;  // wind-up: recua um tico
+        if (SFX.rosnar) SFX.rosnar();
+      }
+      if (e.preCarga > 0) { e.preCarga -= dt; e.x -= e.ivx * e.vel * 0.8 * dt; e.y -= e.ivy * e.vel * 0.8 * dt;  // recuo do bote
+        if (e.preCarga <= 0) { e.investindo = 0.42; } }
+      else if (e.investindo > 0) { e.investindo -= dt; vel = e.vel * 3.4;
         e.x += e.ivx * vel * dt; e.y += e.ivy * vel * dt; }
       else { e.x += nx * vel * dt; e.y += ny * vel * dt; }
-    } else if (e.vals === 'serpente') {                        // cobra: serpenteia
-      const perp = Math.sin(e.faseA * 2.5) * 0.6;
-      e.x += (nx + -ny * perp) * vel * dt; e.y += (ny + nx * perp) * vel * dt;
-    } else if (e.vals === 'atira') {                           // alien: mantém distância e cospe
+    } else if (e.vals === 'serpente') {                        // cobra: dá o bote com aviso
+      e.atkT -= dt;
+      if (dist < 120 && e.atkT <= 0 && e.bote <= 0 && e.windup <= 0) { e.windup = 0.42; e.atkT = 1.6; e.bx = nx; e.by = ny; }
+      if (e.windup > 0 && e.bote <= 0) { /* recua levemente enrolando */ e.x -= nx * vel * 0.4 * dt; e.y -= ny * vel * 0.4 * dt;
+        if (e.windup <= dt) e.bote = 0.3; }
+      else if (e.bote > 0) { e.bote -= dt; e.x += e.bx * e.vel * 3.6 * dt; e.y += e.by * e.vel * 3.6 * dt; }
+      else { const perp = Math.sin(e.faseA * 2.5) * 0.6; e.x += (nx + -ny * perp) * vel * dt; e.y += (ny + nx * perp) * vel * dt; }
+    } else if (e.vals === 'atira') {                           // alien: mira (telegraph) e cospe
       e.atkT -= dt;
       if (dist > 240) { e.x += nx * vel * dt; e.y += ny * vel * dt; }
       else if (dist < 160) { e.x -= nx * vel * 0.6 * dt; e.y -= ny * vel * 0.6 * dt; }
-      if (e.atkT <= 0 && dist < 340) { e.atkT = 1.8;
-        sv.balas.push({ x: e.x, y: e.y, vx: nx * 220, vy: ny * 220, dano: 10, r: 6, inimigo: true, t: 0, cor: '#b0f030' });
+      if (e.atkT <= 0 && dist < 340 && e.windup <= 0) { e.windup = 0.5; e.atkT = 1.9; e.mira2 = { x: nx, y: ny }; }
+      if (e.windup > 0 && e.windup <= dt) {                     // solta o projétil ao fim do wind-up
+        const m2 = e.mira2 || { x: nx, y: ny };
+        sv.balas.push({ x: e.x, y: e.y, vx: m2.x * 240, vy: m2.y * 240, dano: 10, r: 6, inimigo: true, t: 0, cor: '#b0f030', telegrafada: 1 });
         SFX.spray && SFX.spray(); }
-    } else {                                                    // capivara: carga direta
-      e.x += nx * vel * dt; e.y += ny * vel * dt;
+    } else {                                                    // capivara: pequena pausa antes da arrancada
+      e.atkT -= dt;
+      if (dist < 130 && e.atkT <= 0 && e.windup <= 0) { e.windup = 0.4; e.atkT = 1.4; }
+      if (e.windup > 0.15) { /* prepara (quase parada) */ e.x += nx * vel * 0.25 * dt; e.y += ny * vel * 0.25 * dt; }
+      else { e.x += nx * vel * dt; e.y += ny * vel * dt; }
     }
     e.x = clamp(e.x, 15, MW - 15); e.y = clamp(e.y, 15, MH - 15);
     // separação simples entre inimigos (não empilhar)
-    for (let j = i - 1; j >= 0; j--) { const o = sv.inimigos[j]; if (o.morto) continue;
+    for (let j = i - 1; j >= 0; j--) { const o = sv.inimigos[j]; if (o.morto || o.stun > 0) continue;
       const ox = e.x - o.x, oy = e.y - o.y, od = Math.hypot(ox, oy);
       if (od < (e.r + o.r) * 0.8 && od > 0) { const push = ((e.r + o.r) * 0.8 - od) / od * 0.5;
         e.x += ox * push; e.y += oy * push; o.x -= ox * push; o.y -= oy * push; } }
-    // dano ao jogador por contato
-    if (dist < e.r + CFG.SV_RAIO && sv.invT <= 0) svDanoJogador(e.dano, nx, ny);
+    // ── CONTATO: resolve rolar/aparar/dano. O ataque é "ativo" durante golpes ──
+    const golpeando = e.investindo > 0 || e.bote > 0 || e.vals === 'carga' || e.vals === undefined || true;
+    if (dist < e.r + CFG.SV_RAIO && sv.invT <= 0) svResolverAtaque(e, nx, ny);
+  }
+}
+
+function svExecutar(e, nx, ny) {                               // riposte: dano crítico no inimigo marcado
+  const sv = G.sv;
+  const dano = Math.max(e.hpMax, 999) * 0 + (e.hpMax * CFG.SV_RIPOSTE_MULT);  // garante matar
+  e.marcado = false; e.stun = 0;
+  sv.hitStop = 0.1; sv.shake = 0.9; sv.combos++;
+  svFlut('💥 EXECUÇÃO!', e.x, e.y - e.r - 10, '#ff4060');
+  // explosão de faíscas + sangue
+  for (let k = 0; k < 20; k++) { const a = rand(0, 6.28), sp = rand(100, 380);
+    sv.particulas.push({ tipo: k % 2 ? 'faisca' : 'sangue', x: e.x, y: e.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, t: 0, vida: rand(0.3, 0.6), cor: e.cor }); }
+  if (SFX.critico) SFX.critico(); else if (SFX.praga) SFX.praga();
+  svDanoInimigo(e, dano, nx * 200, ny * 200);
+}
+
+// ═══════════════════ COMBATE ESTILO SOULS (rolar + aparar) ═══════════════════
+function svDirecaoAtual() {
+  // direção que o jogador está apontando (movimento) ou olhar como fallback
+  const sv = G.sv; let dx = 0, dy = 0;
+  if (kb.esq) dx -= 1; if (kb.dir) dx += 1;
+  if (kb.fwd) dy -= 1; if (kb.re) dy += 1;
+  if (sv.joy && sv.joy.ativo) { dx += sv.joy.dx; dy += sv.joy.dy; }
+  const m = Math.hypot(dx, dy);
+  if (m > 0.2) return { x: dx / m, y: dy / m };
+  return { x: sv.olhar || 1, y: 0 };                           // parado → rola pra trás (lado do olhar)
+}
+
+function svRolar() {
+  const sv = G.sv; if (!sv.vivo || sv.fim || G.pausa || sv.upOpcoes) return;
+  if (sv.rolando > 0 || sv.rolCd > 0) return;                  // já rolando / em cooldown
+  if (sv.stamina < CFG.SV_ROLL_CUSTO) { svSemVigor(); return; }
+  const d = svDirecaoAtual();
+  // se estiver PARADO, rola pra trás (afasta do inimigo mais próximo, sensação de recuo defensivo)
+  let ang;
+  const parado = !(kb.esq || kb.dir || kb.fwd || kb.re || (sv.joy && sv.joy.ativo));
+  if (parado) { const alvo = svInimigoMaisProximo(sv.x, sv.y, 400);
+    if (alvo) { ang = Math.atan2(sv.y - alvo.y, sv.x - alvo.x); }   // pra longe do inimigo
+    else ang = Math.atan2(0, sv.olhar || 1); }
+  else ang = Math.atan2(d.y, d.x);
+  sv.rolAng = ang;
+  sv.rolando = CFG.SV_ROLL_DUR; sv.iframes = CFG.SV_ROLL_IFRAMES;
+  sv.stamina -= CFG.SV_ROLL_CUSTO; sv.stamRegenT = 0.5;        // atrasa regen
+  sv.olhar = Math.cos(ang) < 0 ? -1 : 1;
+  if (SFX.roll) SFX.roll(); else if (SFX.spray) SFX.spray();
+  // pó do rolamento
+  for (let k = 0; k < 6; k++) sv.particulas.push({ tipo: 'sangue', x: sv.x, y: sv.y + 6, vx: rand(-60, 60), vy: rand(-20, 40), t: 0, vida: 0.4, cor: 'rgba(200,190,160,0.8)' });
+}
+
+function svAparar() {
+  const sv = G.sv; if (!sv.vivo || sv.fim || G.pausa || sv.upOpcoes) return;
+  if (sv.parryT > 0 || sv.parryCd > 0 || sv.parryRecup > 0 || sv.rolando > 0) return;
+  if (sv.stamina < CFG.SV_PARRY_CUSTO) { svSemVigor(); return; }
+  sv.parryT = CFG.SV_PARRY_JANELA;                            // abre janela de aparo
+  sv.stamina -= CFG.SV_PARRY_CUSTO; sv.stamRegenT = 0.4;
+  if (SFX.parryTry) SFX.parryTry(); else if (SFX.peca) SFX.peca();
+}
+
+function svSemVigor() {                                        // feedback de vigor esgotado
+  const sv = G.sv; svFlut('sem vigor!', sv.x, sv.y - 26, '#8ab0ff');
+  if (SFX.multa) SFX.multa();
+}
+
+// chamado quando um ataque inimigo CONECTARIA no jogador — resolve rolar/aparar/dano
+function svResolverAtaque(e, nx, ny) {
+  const sv = G.sv;
+  // 1) invencível (rolando) → ignora de boa
+  if (sv.iframes > 0) return;
+  // 2) janela de PARRY aberta → deflete!
+  if (sv.parryT > 0) { svParryComSucesso(e, nx, ny); return; }
+  // 3) senão, toma dano normal
+  svDanoJogador(e.dano, nx, ny);
+}
+
+function svParryComSucesso(e, nx, ny) {
+  const sv = G.sv;
+  // atordoa e MARCA o inimigo para execução
+  e.stun = CFG.SV_STUN_DUR; e.marcado = true; e.investindo = 0; e.windup = 0;
+  // knockback leve no inimigo
+  e.empurraX = -nx * 120; e.empurraY = -ny * 120;
+  sv.parryT = 0; sv.parryCd = CFG.SV_PARRY_CD; sv.parries++;
+  sv.parryFlash = 0.35; sv.hitStop = 0.12; sv.shake = 0.8;     // FLASH + hit-stop (o "cling!")
+  sv.stamina = Math.min(sv.staminaMax, sv.stamina + 16);       // recompensa: devolve um pouco de vigor
+  svFlut('⚔ PARRY!', sv.x, sv.y - 34, '#ffe066');
+  // faíscas metálicas no ponto de contato
+  const cx = (sv.x + e.x) / 2, cy = (sv.y + e.y) / 2;
+  for (let k = 0; k < 16; k++) { const a = rand(0, 6.28), sp = rand(120, 320);
+    sv.particulas.push({ tipo: 'faisca', x: cx, y: cy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, t: 0, vida: rand(0.25, 0.5) }); }
+  if (SFX.parry) SFX.parry(); else if (SFX.raio) SFX.raio();
+}
+
+function atualizarSoulsSv(dt) {
+  const sv = G.sv; if (!sv.vivo) return;
+  // timers
+  if (sv.rolCd > 0) sv.rolCd -= dt;
+  if (sv.parryCd > 0) sv.parryCd -= dt;
+  if (sv.parryFlash > 0) sv.parryFlash -= dt;
+  if (sv.rolando > 0) {                                        // executando rolamento
+    sv.rolando -= dt; sv.iframes -= dt;
+    const vel = CFG.SV_ROLL_VEL * (0.5 + 0.5 * (sv.rolando / CFG.SV_ROLL_DUR));  // desacelera no fim
+    sv.x = clamp(sv.x + Math.cos(sv.rolAng) * vel * dt, 20, MW - 20);
+    sv.y = clamp(sv.y + Math.sin(sv.rolAng) * vel * dt, 20, MH - 20);
+    if (sv.rolando <= 0) { sv.rolando = 0; sv.rolCd = CFG.SV_ROLL_CD; sv.iframes = 0; }
+  }
+  if (sv.parryT > 0) { sv.parryT -= dt;                        // janela de aparo aberta
+    if (sv.parryT <= 0) { sv.parryT = 0; sv.parryRecup = CFG.SV_PARRY_RECUP; } }  // fechou sem aparar → recuperação (vulnerável)
+  if (sv.parryRecup > 0) sv.parryRecup -= dt;
+  // regeneração de vigor (mais rápida quando não está agindo)
+  if (sv.stamRegenT > 0) sv.stamRegenT -= dt;
+  else if (sv.stamina < sv.staminaMax) {
+    const regen = CFG.SV_STAM_REGEN * (sv.andando ? 0.6 : 1);  // regenera menos correndo
+    sv.stamina = Math.min(sv.staminaMax, sv.stamina + regen * dt);
   }
 }
 
@@ -4267,8 +4417,18 @@ function atualizarBalasSv(dt) {
     }
     if (b.t > 4) { sv.balas.splice(i, 1); continue; }
     if (b.inimigo) {                                           // bala do alien acerta o jogador
-      if (dist2(b.x, b.y, sv.x, sv.y) < (CFG.SV_RAIO + b.r) ** 2 && sv.invT <= 0) {
-        svDanoJogador(b.dano, b.vx / 200, b.vy / 200); sv.balas.splice(i, 1); }
+      if (dist2(b.x, b.y, sv.x, sv.y) < (CFG.SV_RAIO + b.r) ** 2) {
+        if (sv.iframes > 0) { continue; }                      // rolou: atravessa ileso
+        if (sv.parryT > 0) {                                   // aparou o projétil → rebate!
+          b.inimigo = 0; b.vx *= -1.6; b.vy *= -1.6; b.dano = 14; b.cor = '#ffe066'; b._hits = [];
+          sv.parryT = 0; sv.parryCd = CFG.SV_PARRY_CD; sv.parries++; sv.parryFlash = 0.35; sv.hitStop = 0.1; sv.shake = 0.7;
+          sv.stamina = Math.min(sv.staminaMax, sv.stamina + 14);
+          svFlut('⚔ REBATIDO!', sv.x, sv.y - 34, '#ffe066');
+          for (let k = 0; k < 12; k++) { const a = rand(0, 6.28), sp = rand(120, 300); sv.particulas.push({ tipo: 'faisca', x: b.x, y: b.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, t: 0, vida: rand(0.25, 0.45) }); }
+          if (SFX.parry) SFX.parry(); else if (SFX.raio) SFX.raio();
+          continue;
+        }
+        if (sv.invT <= 0) { svDanoJogador(b.dano, b.vx / 200, b.vy / 200); sv.balas.splice(i, 1); } }
       continue;
     }
     // bala do jogador acerta inimigo
@@ -4587,12 +4747,17 @@ function atualizarSobreviv(dt) {
     for (let i = sv.particulas.length - 1; i >= 0; i--) { const p = sv.particulas[i]; p.t += dt; if (p.t > p.vida) sv.particulas.splice(i, 1); }
     return; }
   if (G.pausa || sv.upOpcoes) return;                          // pausa na tela de upgrade
+  // hit-stop: congela a ação por um instante no impacto de um parry/execução (peso do golpe)
+  if (sv.hitStop > 0) { sv.hitStop -= dt;
+    for (let i = sv.particulas.length - 1; i >= 0; i--) { const p = sv.particulas[i]; p.t += dt * 0.3; if (p.vx !== undefined) { p.x += p.vx * dt * 0.3; p.y += p.vy * dt * 0.3; } if (p.t > p.vida) sv.particulas.splice(i, 1); }
+    return; }
   sv.tempo += dt;
   if (sv.invT > 0) sv.invT -= dt;
   // regeneração
   if (sv.regen > 0 && sv.vivo) { sv._regAcc = (sv._regAcc || 0) + sv.regen * dt;
     if (sv._regAcc >= 1) { const h = Math.floor(sv._regAcc); sv.hp = Math.min(sv.hpMax, sv.hp + h); sv._regAcc -= h; } }
 
+  atualizarSoulsSv(dt);
   moverJogadorSv(dt);
   atualizarArmasSv(dt);
   atualizarBalasSv(dt);
@@ -4847,13 +5012,41 @@ function desenharAvatarSv() {
   const frames = SV_AVATAR[svCorAvatar().id];
   const fr = sv.andando ? (Math.floor(sv.frame) % 4) : 0;
   const img = frames[fr];
+  // ghost trail durante a rolada (rastro de velocidade)
+  if (sv.rolando > 0) {
+    for (let g = 2; g >= 1; g--) {
+      ctx.save(); ctx.globalAlpha = 0.14 * g;
+      ctx.translate(sv.x - Math.cos(sv.rolAng) * g * 15, sv.y - Math.sin(sv.rolAng) * g * 15);
+      if (sv.olhar < 0) ctx.scale(-1, 1);
+      ctx.drawImage(img, -15, -30); ctx.restore();
+    }
+  }
   ctx.save(); ctx.translate(sv.x, sv.y);
   if (sv.olhar < 0) ctx.scale(-1, 1);
+  // CAMBALHOTA: gira o sprite durante a rolada
+  if (sv.rolando > 0) { const prog = 1 - sv.rolando / CFG.SV_ROLL_DUR;
+    ctx.translate(0, -12); ctx.rotate(prog * 6.28); ctx.translate(0, 12); }
   // pisca ao levar dano
-  if (sv.invT > 0 && Math.floor(sv.invT * 20) % 2) ctx.globalAlpha = 0.5;
+  if (sv.invT > 0 && sv.rolando <= 0 && Math.floor(sv.invT * 20) % 2) ctx.globalAlpha = 0.5;
   ctx.drawImage(img, -15, -30);
   ctx.globalAlpha = 1;
   ctx.restore();
+  // ── ARCO DE APARO: guarda aberta na frente do jogador ──
+  if (sv.parryT > 0) {
+    const aAng = Math.atan2(sv.mira.y || 0, sv.mira.x || sv.olhar);
+    const forca = sv.parryT / CFG.SV_PARRY_JANELA;
+    ctx.strokeStyle = 'rgba(255,224,102,' + (0.55 + forca * 0.45).toFixed(2) + ')';
+    ctx.lineWidth = 3.5; ctx.beginPath(); ctx.arc(sv.x, sv.y - 8, 23, aAng - 1.15, aAng + 1.15); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,' + (0.35 * forca).toFixed(2) + ')';
+    ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(sv.x, sv.y - 8, 27, aAng - 0.85, aAng + 0.85); ctx.stroke();
+  }
+  // flash dourado expandindo no parry bem-sucedido
+  if (sv.parryFlash > 0) { const p = 1 - sv.parryFlash / 0.35;
+    ctx.strokeStyle = 'rgba(255,224,102,' + (0.9 * (1 - p)).toFixed(2) + ')';
+    ctx.lineWidth = 4 - p * 3; ctx.beginPath(); ctx.arc(sv.x, sv.y - 8, 14 + p * 44, 0, 7); ctx.stroke(); }
+  // recovery de aparo errado: aura azul de vulnerabilidade
+  if (sv.parryRecup > 0) { ctx.strokeStyle = 'rgba(120,160,255,' + (0.25 + 0.2 * Math.sin(sv.tempo * 14)).toFixed(2) + ')';
+    ctx.setLineDash([4, 4]); ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sv.x, sv.y - 6, 19, 0, 7); ctx.stroke(); ctx.setLineDash([]); }
   // escudo (aura)
   if (sv.escudo > 0) { ctx.strokeStyle = 'rgba(120,180,255,' + (0.3 + 0.3 * Math.sin(sv.tempo * 4)).toFixed(3) + ')';
     ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sv.x, sv.y - 4, 20, 0, 7); ctx.stroke(); }
@@ -5011,6 +5204,28 @@ function desenharBichoSv(e) {
         ctx.fillStyle = '#a0d0ff'; ctx.beginPath(); ctx.arc(tipX, tipY, R * 0.07, 0, 7); ctx.fill(); } }
   }
   ctx.restore();
+  // ── APARADO: estrelinhas orbitando (atordoado) ──
+  if (e.stun > 0 && !morrendo) {
+    ctx.fillStyle = '#ffe066'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+    for (let k = 0; k < 3; k++) { const a = e.faseA * 1.6 + k * 2.09;
+      ctx.globalAlpha = 0.6 + 0.4 * Math.sin(a * 2);
+      ctx.fillText('✦', e.x + Math.cos(a) * 11, e.y - e.r - 12 + Math.sin(a) * 3.5); }
+    ctx.globalAlpha = 1; ctx.textAlign = 'left';
+  }
+  // ── MARCADO: anel dourado pulsante = pronto pra execução ──
+  if (e.marcado && !morrendo) {
+    const pul = 0.5 + 0.5 * Math.sin((G.sv ? G.sv.tempo : 0) * 9);
+    ctx.strokeStyle = 'rgba(255,190,60,' + (0.55 + pul * 0.45).toFixed(2) + ')';
+    ctx.lineWidth = 2.5; ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.arc(e.x, e.y, e.r + 7 + pul * 3, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    // perto o suficiente? ensina a execução
+    if (G.sv && dist2(e.x, e.y, G.sv.x, G.sv.y) < 150 * 150) {
+      ctx.fillStyle = 'rgba(255,80,96,' + (0.6 + pul * 0.4).toFixed(2) + ')';
+      ctx.font = '800 10px "Courier New", monospace'; ctx.textAlign = 'center';
+      ctx.fillText('💥 ENCOSTE!', e.x, e.y - e.r - (e.stun > 0 ? 24 : 12));
+      ctx.textAlign = 'left';
+    }
+  }
   // barra de vida
   if (e.hp < e.hpMax && !morrendo) { const bw = e.r * 1.6;
     ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(e.x - bw / 2, e.y - e.r - 8, bw, 3);
@@ -5032,12 +5247,21 @@ function desenharHUDSv() {
   ctx.fillStyle = '#fff'; ctx.font = '700 ' + (grande ? 13 : 12) + 'px "Courier New", monospace'; ctx.textAlign = 'center';
   ctx.fillText(Math.ceil(sv.hp) + ' / ' + sv.hpMax + (sv.escudo > 0 ? '  🛡️' + Math.ceil(sv.escudo) : ''), bx + bw / 2, by + bh - 4);
 
+  // ── barra de VIGOR (stamina do combate souls) ──
+  const vgY = by + bh + 4, vgH = 7, vgW = Math.round(bw * 0.82);
+  ctx.fillStyle = 'rgba(10,14,8,.8)'; rr(bx - 2, vgY - 2, vgW + 4, vgH + 4, 4); ctx.fill();
+  ctx.fillStyle = '#2e2a14'; rr(bx, vgY, vgW, vgH, 3); ctx.fill();
+  const stF = clamp(sv.stamina / sv.staminaMax, 0, 1);
+  const baixa = sv.stamina < CFG.SV_ROLL_CUSTO;
+  ctx.fillStyle = baixa ? '#c05a2e' : '#e8c84d'; rr(bx, vgY, vgW * stF, vgH, 3); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.25)'; rr(bx, vgY, vgW * stF, 2, 1); ctx.fill();
+
   // badge de bioma + clima (abaixo da barra de vida)
   const emojiClima = { limpo: '☀️', chuva: '🌧️', vento: '🍂', frio: '❄️' }[sv.clima] || '';
   const nomeB = (SV_BIOMAS[sv.bioma] || {}).nome || '', nomeC = (SV_CLIMAS[sv.clima] || {}).nome || '';
-  ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(10,14,8,.7)'; rr(bx, by + bh + 4, grande ? 170 : 190, 18, 4); ctx.fill();
+  ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(10,14,8,.7)'; rr(bx, by + bh + 17, grande ? 170 : 190, 18, 4); ctx.fill();
   ctx.fillStyle = '#cfe0b8'; ctx.font = '700 10px "Courier New", monospace';
-  ctx.fillText(emojiClima + ' ' + nomeB + ' · ' + nomeC, bx + 6, by + bh + 17);
+  ctx.fillText(emojiClima + ' ' + nomeB + ' · ' + nomeC, bx + 6, by + bh + 30);
 
   // horda + progresso (topo-centro)
   ctx.textAlign = 'center';
@@ -5090,6 +5314,28 @@ function desenharHUDSv() {
   }
   if (grande) { ctx.fillStyle = 'rgba(255,255,255,.25)'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
     ctx.fillText('arraste para mover', W / 2, H - 8); }
+  // ── botões de ação (mobile): 🌀 rolar + 🛡 aparar ──
+  if (grande && !sv.fim && !sv.upOpcoes && !G.pausa) {
+    const br = 27;
+    const bts = [ { x: W - 52, y: H - 158, ico: '🛡', cb: svAparar, on: sv.parryT > 0 },
+                  { x: W - 118, y: H - 126, ico: '🌀', cb: svRolar, on: sv.rolando > 0 } ];
+    for (const b of bts) {
+      ctx.fillStyle = b.on ? 'rgba(240,200,60,.4)' : 'rgba(18,26,14,.72)';
+      ctx.beginPath(); ctx.arc(b.x, b.y, br, 0, 7); ctx.fill();
+      ctx.strokeStyle = 'rgba(230,240,210,.55)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(b.x, b.y, br, 0, 7); ctx.stroke();
+      ctx.font = '22px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(b.ico, b.x, b.y + 8);
+      botoesTela.push({ x: b.x - br, y: b.y - br, w: br * 2, h: br * 2, cb: b.cb });
+    }
+    ctx.textAlign = 'left';
+  }
+  // ── dica de controles (desktop, primeira horda) ──
+  if (!grande && sv.horda <= 1 && !sv.fim) {
+    ctx.fillStyle = 'rgba(255,255,255,.4)'; ctx.font = '700 11px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('ESPAÇO apara ataques  ·  SHIFT rola (esquiva)', W / 2, H - 10);
+    ctx.textAlign = 'left';
+  }
   desenharMinimapaSv();
   // dica de conserto (quando há máquina quebrada perto e o jogador não está consertando)
   const perto = maquinaConsertavel();
@@ -8054,6 +8300,14 @@ const AJUDA_PAGS = [
     'e o botão ⏸ para pausar. ATENÇÃO: se TODAS as máquinas',
     'quebrarem ao mesmo tempo, você tem 30s para religar pelo',
     'menos uma — senão a safra é perdida e é game over!',
+    'COMBATE SOULS: ESPAÇO abre uma janela de APARO (parry) —',
+    'se um golpe conectar nela, o bicho fica atordoado e',
+    'MARCADO: encoste nele para a EXECUÇÃO (mata na hora)!',
+    'Aparar projétil do alien REFLETE de volta mais forte.',
+    'Errou o aparo? Fica vulnerável um instante (recovery).',
+    'SHIFT rola com invencibilidade (parado = recua do bicho',
+    'mais próximo). Tudo gasta VIGOR (barra amarela) — que',
+    'regenera parado e volta com bônus num aparo perfeito.',
     'Parafusos no chão curam um pouco.',
   ]},
   { t: '🔧 MECÂNICO DE CAMPO (novo modo)', l: [
@@ -8303,6 +8557,10 @@ window.addEventListener('keydown', e => {
   if (G.fase === 'menu') {                          // no menu, setas escolhem os dias
     if (e.code === 'ArrowLeft') { G.diasCampanha = Math.max(1, G.diasCampanha - 1); return; }
     if (e.code === 'ArrowRight') { G.diasCampanha = Math.min(CFG.DIAS_MAX, G.diasCampanha + 1); return; }
+  }
+  if (G.fase === 'surviv') {                        // sobrevivência horda: combate souls
+    if (e.code === 'Space') { svAparar(); return; }
+    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { svRolar(); return; }
   }
   if (G.fase === 'survivor') {
     const s = G.surv;
@@ -8568,6 +8826,7 @@ globalThis.__T = {
          spawnBichoSv, svDanoInimigo, svDanoJogador, gerarUpgradesSv, aplicarUpgradeSv,
          gerarMaquinasSv, atualizarMaquinasSv, maquinaConsertavel, comprarUpgradeSv, fecharLojaSv,
          sortearAmbienteSv, fazerChaoSv, atualizarClimaSv, SV_BIOMAS, SV_CLIMAS, desenharColapsoSv,
+         svRolar, svAparar, atualizarSoulsSv, svResolverAtaque, svExecutar, svDirecaoAtual, svInimigoMaisProximo,
          svFimSobreviv, moverJogadorSv, SV_ARMAS, SV_BICHOS, SV_CORES, construirAvatar,
          iniciarSurvivor, atualizarSurvivor, criarInimigo, criarBoss, ganharXP,
          abrirEscolha, escolherMelhoria, fimSurvivor, spawnInimigo,
