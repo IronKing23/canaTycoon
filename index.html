@@ -40,7 +40,10 @@
     position:relative; line-height:0;
     border:4px solid #4a3826; border-radius:8px;
     box-shadow:0 0 0 3px #141a0f, 0 14px 40px rgba(0,0,0,.6), inset 0 0 0 2px #202c18;
-    background:#0a0f08; max-width:min(96vw, 1180px); width:100%;
+    background:#0a0f08; width:100%;
+    /* limita pela largura E pela altura disponível (16:9) — nunca corta nem "encosta no canto" */
+    max-width:min(96vw, calc((100vh - 128px) * 1.7778), 1180px);
+    max-width:min(96vw, calc((100dvh - 128px) * 1.7778), 1180px);
   }
   canvas {
     width:100%; height:auto; display:block; border-radius:4px;
@@ -62,10 +65,10 @@
     mix-blend-mode:multiply;
   }
   #nomeBox {
-    position:absolute; left:50%; top:20.5%; transform:translateX(-50%);
+    position:absolute; left:50%; top:72.5%; transform:translateX(-50%);
     display:none; gap:8px; align-items:center; z-index:4;
-    background:rgba(8,14,6,.55); padding:6px 12px; border-radius:10px;
-    backdrop-filter:blur(3px);
+    background:rgba(8,14,6,.6); padding:5px 12px; border-radius:10px;
+    backdrop-filter:blur(3px); white-space:nowrap;
   }
   #nomeBox label { color:#9fbf8a; font:700 13px "Courier New",monospace; letter-spacing:1px; }
   #nome {
@@ -117,6 +120,16 @@
   }
   .cx-row button:active { background:#2a3620; }
   #codigoFechar { border-color:#5a6a48; color:#cfe0b8; }
+  /* celular em pé: encolhe o cromo e o nomeBox pra não ofuscar nada */
+  @media (orientation: portrait) and (max-width: 700px) {
+    body { gap:6px; padding:6px; }
+    h1 { font-size:13px; letter-spacing:2px; }
+    footer { display:none; }
+    #frame { max-width:min(98vw, calc((100vh - 60px) * 1.7778)); max-width:min(98vw, calc((100dvh - 60px) * 1.7778)); }
+    #nomeBox { padding:3px 8px; gap:5px; }
+    #nomeBox label { font-size:9px; }
+    #nome { font-size:11px; width:110px; padding:3px 6px; }
+  }
   @media (max-height: 560px) and (orientation: landscape) {
     body { padding:0; gap:0; }
     h1, footer { display:none; }
@@ -7068,13 +7081,24 @@ function render() {
   if (G.pausa) desenharPausa();
   if (G.ajuda) desenharAjuda();
 
-  if (TOQUE && window.innerHeight > window.innerWidth) {            // aviso retrato
-    ctx.fillStyle = 'rgba(10,14,8,.92)'; ctx.fillRect(0, 0, W, H);
+  if (TOQUE && window.innerHeight > window.innerWidth) {            // aviso retrato (clicável)
+    botoesTela.length = 0;                                          // bloqueia toques no que está por baixo
+    ctx.fillStyle = 'rgba(10,14,8,.94)'; ctx.fillRect(0, 0, W, H);
     ctx.fillStyle = '#f0c814'; ctx.textAlign = 'center';
     ctx.font = '700 26px "Courier New", monospace';
-    ctx.fillText('📱↻  GIRE O CELULAR', W / 2, H / 2 - 8);
+    ctx.fillText('📱↻  GIRE O CELULAR', W / 2, H / 2 - 46);
     ctx.font = '15px "Courier New", monospace'; ctx.fillStyle = '#cfe0b8';
-    ctx.fillText('O canavial é melhor na horizontal', W / 2, H / 2 + 24);
+    ctx.fillText('O canavial é melhor na horizontal', W / 2, H / 2 - 16);
+    // botão: tela cheia com trava de orientação
+    const bw2 = 380, bh2 = 52, bx2 = W / 2 - bw2 / 2, by2 = H / 2 + 14;
+    const pul = 0.5 + 0.5 * Math.sin(G.t * 3);
+    ctx.save(); ctx.shadowColor = '#f0c814'; ctx.shadowBlur = 10 + pul * 14;
+    ctx.fillStyle = '#f0c814'; rrect2(bx2, by2, bw2, bh2, 14); ctx.fill(); ctx.restore();
+    ctx.fillStyle = '#141204'; ctx.font = '800 18px "Courier New", monospace';
+    ctx.fillText('⛶ TOQUE: TELA CHEIA', W / 2, by2 + 24);
+    ctx.font = '700 11px "Courier New", monospace';
+    ctx.fillText('(a tela deita sozinha)', W / 2, by2 + 41);
+    botoesTela.push({ x: bx2, y: by2, w: bw2, h: bh2, cb: alternarTelaCheia });
     ctx.textAlign = 'left';
   }
 }
@@ -7714,6 +7738,292 @@ function shareCodigo() {
   else copiarCodigo();
 }
 
+// ═══════════ CAPAS DOS CARTUCHOS (menu-prateleira, arte 16-bit procedural) ═══════════
+let CAPAS = null;                                   // [{id,titulo,sub,cor,arte(canvas)}...]
+function fazerCapas() {
+  const px = (cc, x, y, w, h, cor) => { cc.fillStyle = cor; cc.fillRect(x | 0, y | 0, w, h); };
+  const AW = 104, AH = 118;                          // tamanho da arte da capa
+  const arte = (fn) => { const [c, cc] = offscreen(AW, AH); cc.imageSmoothingEnabled = false; fn(cc); return c; };
+
+  const capaCampanha = arte(cc => {                  // pôr-do-sol + canavial + colhedora de lado
+    const g = cc.createLinearGradient(0, 0, 0, AH);
+    g.addColorStop(0, '#ffcf7a'); g.addColorStop(0.45, '#f2924c'); g.addColorStop(1, '#b8562e');
+    cc.fillStyle = g; cc.fillRect(0, 0, AW, AH);
+    cc.fillStyle = '#fff3d0'; cc.beginPath(); cc.arc(76, 30, 14, 0, 7); cc.fill();
+    px(cc, 60, 20, 4, 3, 'rgba(255,255,255,.5)');
+    cc.fillStyle = '#5a7a34'; cc.fillRect(0, 62, AW, AH - 62);           // campo
+    for (let i = 0; i < 16; i++) {                    // fileiras de cana
+      cc.strokeStyle = i % 2 ? '#6f9440' : '#4a6628'; cc.lineWidth = 2;
+      cc.beginPath(); cc.moveTo(i * 7 - 4, 66); cc.lineTo(i * 7 + 4, AH); cc.stroke(); }
+    // colhedora de lado (corpo laranja + bico + esteira)
+    px(cc, 20, 68, 42, 20, '#d84b28'); px(cc, 20, 68, 42, 5, '#f06a3a');
+    px(cc, 56, 60, 14, 14, '#e85c30'); px(cc, 58, 62, 9, 6, '#8fd6e8');   // cabine+vidro
+    px(cc, 8, 80, 14, 10, '#c9a020'); px(cc, 4, 84, 8, 8, '#e8c840');     // bico colhedor
+    cc.fillStyle = '#22201c'; cc.fillRect(20, 88, 44, 10);  // esteira
+    cc.fillStyle = '#4a4640'; for (let i = 0; i < 5; i++) { cc.beginPath(); cc.arc(27 + i * 8, 93, 3, 0, 7); cc.fill(); }
+    px(cc, 30, 52, 3, 16, '#3a342e'); px(cc, 28, 46, 7, 7, '#6a625a');    // chaminé + fumaça
+    cc.fillStyle = 'rgba(120,120,120,.5)'; cc.beginPath(); cc.arc(30, 40, 5, 0, 7); cc.arc(36, 34, 4, 0, 7); cc.fill();
+  });
+
+  const capaSurvivor = arte(cc => {                  // céu de fogo + nuvem de gafanhotos
+    const g = cc.createLinearGradient(0, 0, 0, AH);
+    g.addColorStop(0, '#3a0e08'); g.addColorStop(0.5, '#a8341c'); g.addColorStop(1, '#e07a2e');
+    cc.fillStyle = g; cc.fillRect(0, 0, AW, AH);
+    cc.fillStyle = '#ffb03a'; cc.beginPath(); cc.arc(52, 78, 26, 0, 7); cc.fill();  // sol doente
+    cc.fillStyle = '#ffe89a'; cc.beginPath(); cc.arc(52, 78, 15, 0, 7); cc.fill();
+    cc.fillStyle = '#1c0e06'; cc.fillRect(0, 96, AW, AH - 96);
+    for (let i = 0; i < 14; i++) { cc.strokeStyle = '#2e1c0c'; cc.lineWidth = 2;
+      cc.beginPath(); cc.moveTo(i * 8, 98); cc.lineTo(i * 8 + 3, AH); cc.stroke(); }
+    // enxame (silhuetas de gafanhoto)
+    cc.fillStyle = '#160a04';
+    for (let i = 0; i < 26; i++) { const gx = (i * 37) % AW, gy = 8 + (i * 23) % 62;
+      cc.fillRect(gx, gy, 5, 2); cc.fillRect(gx + 1, gy - 2, 2, 2); cc.fillRect(gx - 2, gy - 1, 2, 1); }
+    // chamas na base
+    for (let i = 0; i < 7; i++) { const fx = 6 + i * 15;
+      cc.fillStyle = '#ff6a2e'; cc.beginPath(); cc.moveTo(fx, 100); cc.quadraticCurveTo(fx + 4, 86 - (i % 3) * 5, fx + 8, 100); cc.fill();
+      cc.fillStyle = '#ffd23a'; cc.beginPath(); cc.moveTo(fx + 2, 100); cc.quadraticCurveTo(fx + 4, 92, fx + 6, 100); cc.fill(); }
+  });
+
+  const capaDuelo = arte(cc => {                     // arena dividida, 2 tratores frente a frente
+    cc.fillStyle = '#1c3a6a'; cc.fillRect(0, 0, AW / 2, AH);
+    cc.fillStyle = '#7a1c1c'; cc.fillRect(AW / 2, 0, AW / 2, AH);
+    // raio divisor
+    cc.strokeStyle = '#ffe066'; cc.lineWidth = 3; cc.beginPath();
+    cc.moveTo(AW / 2 + 4, 0); cc.lineTo(AW / 2 - 6, 40); cc.lineTo(AW / 2 + 6, 62); cc.lineTo(AW / 2 - 4, AH); cc.stroke();
+    const trator = (tx, cor, flip) => { cc.save(); cc.translate(tx, 78); if (flip) cc.scale(-1, 1);
+      px(cc, -16, -12, 26, 14, cor); px(cc, 2, -22, 12, 12, cor);
+      px(cc, 4, -20, 8, 6, '#bfe8f4');
+      cc.fillStyle = '#181410'; cc.beginPath(); cc.arc(-8, 6, 8, 0, 7); cc.arc(10, 6, 5, 0, 7); cc.fill();
+      cc.fillStyle = '#3a342e'; cc.beginPath(); cc.arc(-8, 6, 4, 0, 7); cc.fill(); cc.restore(); };
+    trator(26, '#3a8ad0', false); trator(78, '#e04a3a', true);
+    cc.fillStyle = '#fff'; cc.font = '900 20px "Courier New", monospace'; cc.textAlign = 'center';
+    cc.strokeStyle = '#000'; cc.lineWidth = 4; cc.strokeText('VS', AW / 2, 34); cc.fillText('VS', AW / 2, 34);
+  });
+
+  const capaMecanico = arte(cc => {                  // oficina noturna: chave gigante + engrenagem
+    const g = cc.createLinearGradient(0, 0, 0, AH);
+    g.addColorStop(0, '#0e1c30'); g.addColorStop(1, '#1c3050');
+    cc.fillStyle = g; cc.fillRect(0, 0, AW, AH);
+    // engrenagem de fundo
+    cc.fillStyle = '#27405f';
+    for (let i = 0; i < 8; i++) { const a = i * 0.785; cc.save(); cc.translate(52, 56); cc.rotate(a);
+      cc.fillRect(-6, -40, 12, 14); cc.restore(); }
+    cc.beginPath(); cc.arc(52, 56, 30, 0, 7); cc.fill();
+    cc.fillStyle = '#0e1c30'; cc.beginPath(); cc.arc(52, 56, 12, 0, 7); cc.fill();
+    // chave inglesa dourada em diagonal
+    cc.save(); cc.translate(52, 60); cc.rotate(-0.7);
+    px(cc, -6, -34, 12, 62, '#e8c840'); px(cc, -6, -34, 4, 62, '#fff0a0');
+    cc.fillStyle = '#e8c840'; cc.beginPath(); cc.arc(0, -38, 14, 0, 7); cc.fill();
+    cc.fillStyle = '#0e1c30'; cc.beginPath(); cc.arc(3, -42, 8, 0, 7); cc.fill();
+    cc.fillStyle = '#e8c840'; cc.beginPath(); cc.arc(0, 30, 11, 0, 7); cc.fill();
+    cc.fillStyle = '#0e1c30'; cc.fillRect(-3, 22, 12, 8); cc.restore();
+    // faíscas
+    cc.fillStyle = '#ffe066'; for (let i = 0; i < 8; i++) px(cc, (i * 41) % AW, (i * 29) % AH, 2, 2, '#ffe066');
+  });
+
+  const capaHorda = arte(cc => {                     // noite roxa: mecânico cercado, olhos na cana
+    const g = cc.createLinearGradient(0, 0, 0, AH);
+    g.addColorStop(0, '#160a2a'); g.addColorStop(0.6, '#2a1246'); g.addColorStop(1, '#0c1c0c');
+    cc.fillStyle = g; cc.fillRect(0, 0, AW, AH);
+    cc.fillStyle = '#e8e0c0'; cc.beginPath(); cc.arc(80, 22, 11, 0, 7); cc.fill();  // lua
+    cc.fillStyle = '#2a1246'; cc.beginPath(); cc.arc(84, 19, 9, 0, 7); cc.fill();
+    // paredão de cana escuro
+    cc.fillStyle = '#0e260e';
+    for (let i = 0; i < 18; i++) { const bx2 = i * 6; cc.fillRect(bx2, 70 + (i % 3) * 4, 4, AH); }
+    // olhos vermelhos na escuridão
+    const olhos = [[12, 80], [30, 92], [66, 84], [88, 94], [48, 100]];
+    for (const [ox, oy] of olhos) { px(cc, ox, oy, 3, 3, '#ff3020'); px(cc, ox + 6, oy, 3, 3, '#ff3020'); }
+    // alien espiando
+    cc.fillStyle = '#7a2ea8'; cc.beginPath(); cc.ellipse(20, 66, 9, 8, 0, 0, 7); cc.fill();
+    cc.fillStyle = '#e02020'; cc.beginPath(); cc.arc(23, 64, 3.5, 0, 7); cc.fill();
+    // mecânico pequeno no centro (capacete amarelo, macacão azul) com chave
+    px(cc, 47, 52, 10, 12, '#2e6bc0'); px(cc, 48, 44, 8, 8, '#e0b088');
+    cc.fillStyle = '#f0c020'; cc.beginPath(); cc.arc(52, 44, 5.5, Math.PI, 0); cc.fill();
+    px(cc, 45, 64, 4, 6, '#1a4a8a'); px(cc, 55, 64, 4, 6, '#1a4a8a');
+    px(cc, 58, 50, 8, 3, '#9aa4ac'); px(cc, 64, 47, 4, 4, '#c0c8d0');   // chave na mão
+    // aura/lanterna
+    const lg = cc.createRadialGradient(52, 56, 4, 52, 56, 30);
+    lg.addColorStop(0, 'rgba(255,230,140,.35)'); lg.addColorStop(1, 'rgba(255,230,140,0)');
+    cc.fillStyle = lg; cc.fillRect(0, 0, AW, AH);
+  });
+
+  CAPAS = [
+    { id: 'campanha', titulo: 'SAFRA', sub: 'a campanha', cor: '#7cc85a', arte: capaCampanha },
+    { id: 'survivor', titulo: 'PRAGA SEM FIM', sub: 'ondas infinitas', cor: '#ff8a3a', arte: capaSurvivor },
+    { id: 'horda', titulo: 'SOBREVIVÊNCIA', sub: 'horda no canavial', cor: '#c05ae0', arte: capaHorda },
+    { id: 'mecanico', titulo: 'S.O.S. OFICINA', sub: 'mecânico de campo', cor: '#5a9ae0', arte: capaMecanico },
+    { id: 'duelo', titulo: 'DUELO', sub: 'desafie um amigo', cor: '#8fd6e8', arte: capaDuelo },
+  ];
+}
+
+function mnPlay(id) {                                 // dispara o modo do cartucho
+  if (id === 'campanha') iniciarJogo();
+  else if (id === 'survivor') iniciarSurvivor();
+  else if (id === 'horda') entrarSobreviv();
+  else if (id === 'mecanico') iniciarMecanico();
+}
+
+function desenharCaixaAberta() {
+  const mn = G.mn, cp = CAPAS[mn.sel], t2 = mn.t;
+  mn.t += 1 / 60;
+  botoesTela.length = 0;                              // overlay bloqueia cliques de trás
+  // fundo escurecido (clicável = voltar)
+  ctx.fillStyle = 'rgba(4,8,3,' + Math.min(0.78, t2 * 2.2).toFixed(2) + ')';
+  ctx.fillRect(0, 0, W, H);
+  botoesTela.push({ x: 0, y: 0, w: W, h: H, cb: () => { G.mn = { sel: null, t: 0 }; } });
+
+  const CW2 = 124, CH2 = 172;
+  const ease = p => 1 - Math.pow(1 - clamp(p, 0, 1), 3);
+  // fase 1: caixa voa da prateleira pro centro (0→0.35)
+  const p1 = ease(t2 / 0.35);
+  const k = 1 + p1 * 0.95;                            // escala final ~1.95
+  const cxA = (mn.ox + CW2 / 2) + ((W / 2 - 150) - (mn.ox + CW2 / 2)) * p1;
+  const cyA = (mn.oy + CH2 / 2) + ((H / 2 - 6) - (mn.oy + CH2 / 2)) * p1;
+  // fase 2: tampa abre (0.35→0.8) | fase 3: fita sobe (0.8→1.3)
+  const p2 = ease((t2 - 0.35) / 0.45);
+  const p3 = ease((t2 - 0.8) / 0.5);
+  const pronto = t2 >= 1.3;
+  if (!mn._sfxFita && p3 > 0.02) { mn._sfxFita = 1; if (SFX.moeda) SFX.moeda(); }
+
+  ctx.save(); ctx.translate(cxA, cyA); ctx.scale(k, k); ctx.translate(-CW2 / 2, -CH2 / 2);
+  if (p2 <= 0.01) {
+    desenharCaixaJogo(0, 0, CW2, CH2, cp, 1);          // ainda fechada, voando
+  } else {
+    // corpo ABERTO: interior escuro com slot
+    ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.beginPath(); ctx.ellipse(CW2 / 2, CH2 + 3, CW2 * 0.52, 6, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#0a0d10'; rrect2(0, 0, CW2, CH2, 6); ctx.fill();
+    ctx.strokeStyle = cp.cor; ctx.lineWidth = 2.5; rrect2(0, 0, CW2, CH2, 6); ctx.stroke();
+    ctx.fillStyle = '#05070a'; ctx.fillRect(10, 14, CW2 - 20, CH2 - 28);      // fundo interno
+    ctx.fillStyle = '#1a2026'; ctx.fillRect(20, CH2 / 2 - 8, CW2 - 40, 16);   // slot da fita
+    ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.lineWidth = 1; ctx.strokeRect(20, CH2 / 2 - 8, CW2 - 40, 16);
+    for (const [px2, py2] of [[8, 8], [CW2 - 10, 8], [8, CH2 - 10], [CW2 - 10, CH2 - 10]]) {
+      ctx.fillStyle = '#3a4048'; ctx.beginPath(); ctx.arc(px2, py2, 2, 0, 7); ctx.fill(); }
+    // a FITA saindo do slot pra cima
+    if (p3 > 0) {
+      const fw = 92, fh = 104, fx = (CW2 - fw) / 2;
+      const bob = pronto ? Math.sin(G.t * 2.2) * 3 : 0;
+      const fy = (CH2 / 2 - 20) - p3 * 128 + bob;
+      // sombra da fita no interior
+      ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.beginPath(); ctx.ellipse(CW2 / 2, CH2 / 2 + 2, fw * 0.4 * (1 - p3 * 0.5), 4, 0, 0, 7); ctx.fill();
+      // corpo do cartucho
+      ctx.fillStyle = '#3a3f46'; rrect2(fx, fy, fw, fh, 5); ctx.fill();
+      ctx.fillStyle = '#2a2e34'; ctx.fillRect(fx, fy + fh - 14, fw, 14);       // conector
+      ctx.strokeStyle = '#1a1d22'; ctx.lineWidth = 1.5; rrect2(fx, fy, fw, fh, 5); ctx.stroke();
+      for (let i = 0; i < 4; i++) { ctx.fillStyle = '#2a2e34'; ctx.fillRect(fx + 8 + i * 20, fy + 4, 12, 4); }  // ranhuras
+      ctx.fillStyle = 'rgba(255,255,255,.08)'; ctx.fillRect(fx + 3, fy + 3, 5, fh - 20);
+      // label com a arte
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(cp.arte, fx + 10, fy + 13, fw - 20, 62);
+      ctx.strokeStyle = cp.cor; ctx.lineWidth = 1.5; ctx.strokeRect(fx + 10, fy + 13, fw - 20, 62);
+      ctx.fillStyle = '#ffd94d'; ctx.font = '800 8px "Courier New", monospace'; ctx.textAlign = 'center';
+      ctx.fillText('CANA TYCOON', fx + fw / 2, fy + 84);
+      ctx.fillStyle = '#eef2e0'; ctx.font = '700 7px "Courier New", monospace';
+      ctx.fillText(cp.titulo, fx + fw / 2, fy + 84 + 9);
+    }
+    // a TAMPA (frente com arte) girando na dobradiça esquerda
+    const sx = 1 - p2;
+    if (sx > 0.03) { ctx.save(); ctx.translate(0, 0); ctx.scale(sx, 1);
+      ctx.globalAlpha = 0.55 + sx * 0.45;
+      desenharCaixaJogo(0, 0, CW2, CH2, cp, 1);
+      ctx.globalAlpha = 1; ctx.restore(); }
+  }
+  ctx.restore();
+
+  // painel de infos + botões (lado direito), só quando pronto
+  if (pronto) {
+    const ix = W / 2 + 30, iw = 300;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ffd94d'; ctx.font = '800 24px "Segoe UI", sans-serif';
+    ctx.fillText(cp.titulo, ix, H / 2 - 92);
+    ctx.fillStyle = '#b8c8a8'; ctx.font = '600 13px "Courier New", monospace';
+    ctx.fillText(cp.sub, ix, H / 2 - 70);
+    // recorde do modo
+    let rec = '';
+    if (cp.id === 'campanha') rec = G.recDias ? '🏆 melhor: ' + G.recDias + 'd · pico ' + $(G.recGrana) : '';
+    else if (cp.id === 'survivor') { const r = Number(localStorage.getItem(CFG.CHAVE_SURV)) || 0; rec = r ? '🏆 recorde: ' + mmss(r) : ''; }
+    else if (cp.id === 'horda') { let r = 0; try { r = Number(localStorage.getItem(CFG.CHAVE_SV)) || 0; } catch (e) {} rec = r ? '🏆 recorde: horda ' + r : ''; }
+    if (rec) { ctx.fillStyle = '#8fd6e8'; ctx.font = '700 12px "Courier New", monospace'; ctx.fillText(rec, ix, H / 2 - 48); }
+
+    // extras da CAMPANHA: seletor de dias
+    if (cp.id === 'campanha') {
+      const sy = H / 2 - 26, dc = G.diasCampanha;
+      ctx.fillStyle = 'rgba(0,0,0,.4)'; rrect2(ix, sy, 220, 36, 8); ctx.fill();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffd94d'; ctx.font = '800 16px "Courier New", monospace';
+      ctx.fillText(dc + (dc > 1 ? ' DIAS' : ' DIA'), ix + 110, sy + 24);
+      ctx.fillStyle = dc > 1 ? '#ffd94d' : '#55603f'; ctx.fillText('\u25C0', ix + 20, sy + 24);
+      ctx.fillStyle = dc < CFG.DIAS_MAX ? '#ffd94d' : '#55603f'; ctx.fillText('\u25B6', ix + 200, sy + 24);
+      botoesTela.push({ x: ix, y: sy, w: 60, h: 36, cb: () => { G.diasCampanha = Math.max(1, G.diasCampanha - 1); } });
+      botoesTela.push({ x: ix + 160, y: sy, w: 60, h: 36, cb: () => { G.diasCampanha = Math.min(CFG.DIAS_MAX, G.diasCampanha + 1); } });
+      ctx.textAlign = 'left';
+    }
+
+    // botões de ação
+    const byA = H / 2 + 26;
+    if (cp.id === 'duelo') {
+      ctx.fillStyle = '#8fd6e8'; rrect2(ix, byA, iw - 40, 40, 10); ctx.fill();
+      ctx.fillStyle = '#0e1508'; ctx.font = '800 15px "Courier New", monospace'; ctx.textAlign = 'center';
+      ctx.fillText('🏆 CRIAR DESAFIO', ix + (iw - 40) / 2, byA + 26);
+      botoesTela.push({ x: ix, y: byA, w: iw - 40, h: 40, cb: criarDesafio });
+      ctx.fillStyle = 'rgba(0,0,0,.35)'; rrect2(ix, byA + 50, iw - 40, 40, 10); ctx.fill();
+      ctx.strokeStyle = '#8fd6e8'; ctx.lineWidth = 1.5; rrect2(ix, byA + 50, iw - 40, 40, 10); ctx.stroke();
+      ctx.fillStyle = '#cfeef7'; ctx.fillText('🎟 ENTRAR COM CÓDIGO', ix + (iw - 40) / 2, byA + 76);
+      botoesTela.push({ x: ix, y: byA + 50, w: iw - 40, h: 40, cb: entrarDesafio });
+    } else {
+      const pul = 0.5 + 0.5 * Math.sin(G.t * 3.2);
+      ctx.save(); ctx.shadowColor = cp.cor; ctx.shadowBlur = 12 + pul * 14;
+      ctx.fillStyle = cp.cor; rrect2(ix, byA, iw - 40, 46, 12); ctx.fill(); ctx.restore();
+      ctx.fillStyle = '#0e1006'; ctx.font = '900 19px "Courier New", monospace'; ctx.textAlign = 'center';
+      ctx.fillText('\u25B6 JOGAR', ix + (iw - 40) / 2, byA + 31);
+      botoesTela.push({ x: ix, y: byA, w: iw - 40, h: 46, cb: () => mnPlay(cp.id) });
+    }
+    // voltar
+    const byV = byA + (cp.id === 'duelo' ? 104 : 60);
+    ctx.fillStyle = 'rgba(0,0,0,.35)'; rrect2(ix, byV, 150, 32, 9); ctx.fill();
+    ctx.strokeStyle = 'rgba(200,210,190,.5)'; ctx.lineWidth = 1.5; rrect2(ix, byV, 150, 32, 9); ctx.stroke();
+    ctx.fillStyle = '#cfe0b8'; ctx.font = '700 13px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('\u2715 VOLTAR', ix + 75, byV + 21);
+    botoesTela.push({ x: ix, y: byV, w: 150, h: 32, cb: () => { G.mn = { sel: null, t: 0 }; } });
+    ctx.textAlign = 'left';
+  }
+}
+
+function desenharCaixaJogo(X, Y, cw2, ch2, cp, esc) {
+  // sombra no chão
+  ctx.fillStyle = 'rgba(0,0,0,.4)';
+  ctx.beginPath(); ctx.ellipse(X + cw2 / 2, Y + ch2 + 3, cw2 * 0.52, 6, 0, 0, 7); ctx.fill();
+  // corpo plástico
+  ctx.fillStyle = '#101418'; rrect2(X, Y, cw2, ch2, 6); ctx.fill();
+  ctx.strokeStyle = cp.cor; ctx.lineWidth = 2.5; rrect2(X, Y, cw2, ch2, 6); ctx.stroke();
+  // lombada esquerda
+  ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(X + 2, Y + 3, 6, ch2 - 6);
+  // faixa da marca no topo
+  ctx.fillStyle = '#2a2418'; ctx.fillRect(X + 8, Y + 5, cw2 - 14, 16);
+  ctx.fillStyle = '#ffd94d'; ctx.font = '800 9px "Courier New", monospace'; ctx.textAlign = 'center';
+  ctx.fillText('🚜 CANA TYCOON', X + cw2 / 2 + 1, Y + 16);
+  // arte
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(cp.arte, X + 9, Y + 24, cw2 - 18, Math.round((cw2 - 18) * 118 / 104));
+  ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 1.5;
+  ctx.strokeRect(X + 9, Y + 24, cw2 - 18, Math.round((cw2 - 18) * 118 / 104));
+  // título
+  ctx.fillStyle = '#eef2e0'; ctx.font = '800 ' + (cp.titulo.length > 11 ? 10 : 12) + 'px "Courier New", monospace';
+  ctx.fillText(cp.titulo, X + cw2 / 2, Y + ch2 - 21);
+  ctx.fillStyle = '#9aa890'; ctx.font = '600 8px "Courier New", monospace';
+  ctx.fillText(cp.sub, X + cw2 / 2, Y + ch2 - 9);
+  // brilho plástico diagonal
+  const gl = ctx.createLinearGradient(X, Y, X + cw2, Y + ch2);
+  gl.addColorStop(0, 'rgba(255,255,255,.13)'); gl.addColorStop(0.28, 'rgba(255,255,255,0)');
+  gl.addColorStop(0.75, 'rgba(255,255,255,0)'); gl.addColorStop(1, 'rgba(255,255,255,.06)');
+  ctx.fillStyle = gl; rrect2(X, Y, cw2, ch2, 6); ctx.fill();
+  ctx.textAlign = 'left';
+}
+function rrect2(x, y, w, h, r) {                       // rounded rect global (as caixas usam fora do desenharMenu)
+  ctx.beginPath(); ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
 function desenharMenu() {
   const t = G.t, cx = W / 2;
 
@@ -7843,98 +8153,46 @@ function desenharMenu() {
       ctx.restore(); }
   };
 
-  // ══════════════════ 3 CARDS DE MODO ══════════════════
-  const cw = 280, gap = 24, ch = 250, x0 = cx - (cw * 3 + gap * 2) / 2, cyc = 150;
-  const recSurv = Number(localStorage.getItem(CFG.CHAVE_SURV)) || 0;
+  // ══════════════════ PRATELEIRA DE CARTUCHOS ══════════════════
+  if (!CAPAS) fazerCapas();
+  if (!G.mn) G.mn = { sel: null, t: 0 };
+  const aberto = G.mn.sel != null;
 
-  // -- Card 1: CAMPANHA --
-  { const X = x0;
-    card(X, cyc, cw, ch, '#7cc85a', false);
-    icoCana(X + cw / 2, cyc + 54);
-    ctx.fillStyle = '#eef7e2'; ctx.font = '800 22px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('CAMPANHA', X + cw / 2, cyc + 100);
-    ctx.fillStyle = '#9fbf8a'; ctx.font = '12px "Courier New", monospace';
-    ctx.fillText('colha, venda e sobreviva à safra', X + cw / 2, cyc + 122);
-    // seletor de dias
-    const sy = cyc + 150, dc = G.diasCampanha;
-    ctx.fillStyle = 'rgba(0,0,0,.35)'; rrect(X + 40, sy, cw - 80, 34, 8); ctx.fill();
-    ctx.fillStyle = '#ffd94d'; ctx.font = '800 16px "Courier New", monospace';
-    ctx.fillText(dc + (dc > 1 ? ' DIAS' : ' DIA'), X + cw / 2, sy + 23);
-    ctx.fillStyle = dc > 1 ? '#ffd94d' : '#55603f'; ctx.font = '800 18px "Courier New", monospace';
-    ctx.fillText('\u25C0', X + 56, sy + 23);
-    ctx.fillStyle = dc < CFG.DIAS_MAX ? '#ffd94d' : '#55603f';
-    ctx.fillText('\u25B6', X + cw - 56, sy + 23);
-    botoesTela.push({ x: X + 40, y: sy, w: 40, h: 34, cb: () => { G.diasCampanha = Math.max(1, G.diasCampanha - 1); } });
-    botoesTela.push({ x: X + cw - 80, y: sy, w: 40, h: 34, cb: () => { G.diasCampanha = Math.min(CFG.DIAS_MAX, G.diasCampanha + 1); } });
-    // CTA
-    const by = cyc + ch - 44;
-    ctx.fillStyle = '#7cc85a'; rrect(X + 30, by, cw - 60, 32, 9); ctx.fill();
-    ctx.fillStyle = '#0e1508'; ctx.font = '800 15px "Courier New", monospace';
-    ctx.fillText('\u25B6 JOGAR', X + cw / 2, by + 21);
-    botoesTela.push({ x: X + 30, y: by, w: cw - 60, h: 32, cb: iniciarJogo });
+  // estante de madeira (fundo das caixas)
+  const shY = 132, shH = 236;
+  ctx.fillStyle = 'rgba(26,18,10,.62)'; rrect(60, shY, W - 120, shH, 12); ctx.fill();
+  ctx.strokeStyle = 'rgba(90,64,36,.9)'; ctx.lineWidth = 3; rrect(60, shY, W - 120, shH, 12); ctx.stroke();
+  // tábua
+  const tbY = shY + shH - 34;
+  const wg = ctx.createLinearGradient(0, tbY, 0, tbY + 16);
+  wg.addColorStop(0, '#8a5e34'); wg.addColorStop(0.5, '#6a4626'); wg.addColorStop(1, '#3e2814');
+  ctx.fillStyle = wg; ctx.fillRect(70, tbY, W - 140, 16);
+  ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(70, tbY + 16, W - 140, 5);
+  for (let i = 0; i < 10; i++) { ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(86 + i * 82, tbY + 3, 2, 10); }
+  ctx.fillStyle = '#d8c9a8'; ctx.font = '700 11px "Courier New", monospace'; ctx.textAlign = 'center';
+  ctx.fillText('— escolha um cartucho —', W / 2, shY + 20);
+
+  // as 5 caixas em pé na tábua
+  const CW2 = 124, CH2 = 172, GAP2 = 24;
+  const totW = CAPAS.length * CW2 + (CAPAS.length - 1) * GAP2;
+  const bx0 = (W - totW) / 2, bY = tbY - CH2 + 2;
+  G._mnPos = [];
+  for (let i = 0; i < CAPAS.length; i++) {
+    const cp = CAPAS[i], X = bx0 + i * (CW2 + GAP2);
+    const bob = aberto ? 0 : Math.sin(t * 1.6 + i * 1.3) * 2;
+    const Y = bY + bob;
+    G._mnPos.push({ x: X, y: Y });
+    if (aberto && G.mn.sel === i) continue;          // a selecionada é desenhada no overlay
+    ctx.globalAlpha = aberto ? 0.35 : 1;
+    desenharCaixaJogo(X, Y, CW2, CH2, cp, 1);
+    ctx.globalAlpha = 1;
+    if (!aberto) botoesTela.push({ x: X, y: Y, w: CW2, h: CH2, cb: ((idx) => () => {
+      G.mn = { sel: idx, t: 0, ox: G._mnPos[idx].x, oy: G._mnPos[idx].y };
+      if (SFX.peca) SFX.peca();
+    })(i) });
   }
 
-  // -- Card 2: SOBREVIVÊNCIA (destaque) --
-  { const X = x0 + cw + gap;
-    const pulse = 0.5 + 0.5 * Math.sin(t * 3);
-    ctx.save(); ctx.shadowColor = 'rgba(255,120,40,' + (0.4 + pulse * 0.4) + ')'; ctx.shadowBlur = 20 + pulse * 14;
-    card(X, cyc - 8, cw, ch + 16, '#ff8a3a', false); ctx.restore();
-    ctx.fillStyle = '#ff8a3a'; ctx.font = '700 10px "Courier New", monospace'; ctx.textAlign = 'center';
-    ctx.fillText('\u2605 MAIS JOGADO', X + cw / 2, cyc + 8);
-    icoFogo(X + cw / 2, cyc + 56);
-    ctx.fillStyle = '#ffe7d0'; ctx.font = '800 21px "Segoe UI", sans-serif';
-    ctx.fillText('SOBREVIVÊNCIA', X + cw / 2, cyc + 100);
-    ctx.fillStyle = '#e8a878'; ctx.font = '12px "Courier New", monospace';
-    ctx.fillText('praga sem fim · ondas infinitas', X + cw / 2, cyc + 122);
-    ctx.fillStyle = 'rgba(0,0,0,.35)'; rrect(X + 40, cyc + 150, cw - 80, 34, 8); ctx.fill();
-    ctx.fillStyle = '#ffd94d'; ctx.font = '800 15px "Courier New", monospace';
-    ctx.fillText('\uD83C\uDFC6 ' + (recSurv ? mmss(recSurv) : '--:--'), X + cw / 2, cyc + 172);
-    const by = cyc + ch - 44;
-    const bg = ctx.createLinearGradient(X, by, X, by + 32); bg.addColorStop(0, '#ff8a3a'); bg.addColorStop(1, '#ff6a2e');
-    ctx.fillStyle = bg; rrect(X + 30, by, cw - 60, 32, 9); ctx.fill();
-    ctx.fillStyle = '#fff'; ctx.font = '800 15px "Courier New", monospace';
-    ctx.fillText('\u25B6 JOGAR', X + cw / 2, by + 21);
-    botoesTela.push({ x: X + 30, y: by, w: cw - 60, h: 32, cb: iniciarSurvivor });
-  }
-
-  // -- Card 3: DUELO --
-  { const X = x0 + (cw + gap) * 2;
-    card(X, cyc, cw, ch, '#8fd6e8', false);
-    icoDuelo(X + cw / 2, cyc + 54);
-    ctx.fillStyle = '#e2f2f7'; ctx.font = '800 22px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('DUELO', X + cw / 2, cyc + 100);
-    ctx.fillStyle = '#8fb8c4'; ctx.font = '12px "Courier New", monospace';
-    ctx.fillText('mesma safra · quem lucra mais vence', X + cw / 2, cyc + 122);
-    const b1 = cyc + 148, b2 = cyc + 190;
-    ctx.fillStyle = '#8fd6e8'; rrect(X + 30, b1, cw - 60, 34, 9); ctx.fill();
-    ctx.fillStyle = '#0e1508'; ctx.font = '800 14px "Courier New", monospace';
-    ctx.fillText('\uD83C\uDFC6 CRIAR DESAFIO', X + cw / 2, b1 + 22);
-    botoesTela.push({ x: X + 30, y: b1, w: cw - 60, h: 34, cb: criarDesafio });
-    ctx.fillStyle = 'rgba(0,0,0,.3)'; rrect(X + 30, b2, cw - 60, 34, 9); ctx.fill();
-    ctx.strokeStyle = '#8fd6e8'; ctx.lineWidth = 1.5; rrect(X + 30, b2, cw - 60, 34, 9); ctx.stroke();
-    ctx.fillStyle = '#cfeef7';
-    ctx.fillText('\uD83C\uDF9F ENTRAR COM CÓDIGO', X + cw / 2, b2 + 22);
-    botoesTela.push({ x: X + 30, y: b2, w: cw - 60, h: 34, cb: entrarDesafio });
-  }
-
-  // ══════════════════ BARRA INFERIOR ══════════════════
-  { const pulse = 0.5 + 0.5 * Math.sin(t * 3), pw = 300, gap2 = 14, pyp = 420;
-    const x1 = cx - pw - gap2 / 2, x2 = cx + gap2 / 2;
-    // pílula MECÂNICO
-    ctx.save(); ctx.shadowColor = 'rgba(120,175,225,' + (0.3 + pulse * 0.4) + ')'; ctx.shadowBlur = 14;
-    rrect(x1, pyp, pw, 32, 16); ctx.fillStyle = '#2e6b9c'; ctx.fill(); ctx.restore();
-    rrect(x1, pyp, pw, 32, 16); ctx.strokeStyle = '#8fd6e8'; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.fillStyle = '#eaf4fb'; ctx.font = '800 13px "Courier New", monospace'; ctx.textAlign = 'center';
-    ctx.fillText('🔧 MECÂNICO DE CAMPO', x1 + pw / 2, pyp + 21);
-    botoesTela.push({ x: x1, y: pyp, w: pw, h: 32, cb: iniciarMecanico });
-    // pílula PESADELO (Doom)
-    ctx.save(); ctx.shadowColor = 'rgba(220,60,50,' + (0.35 + pulse * 0.45) + ')'; ctx.shadowBlur = 16;
-    rrect(x2, pyp, pw, 32, 16); ctx.fillStyle = '#7a1e14'; ctx.fill(); ctx.restore();
-    rrect(x2, pyp, pw, 32, 16); ctx.strokeStyle = '#ff6a4a'; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.fillStyle = '#ffe0d8'; ctx.font = '800 13px "Courier New", monospace';
-    ctx.fillText('🌾 SOBREVIVÊNCIA (HORDA)', x2 + pw / 2, pyp + 21);
-    botoesTela.push({ x: x2, y: pyp, w: pw, h: 32, cb: entrarSobreviv });
-    ctx.textAlign = 'left'; }
+  ctx.textAlign = 'left';
   ctx.fillStyle = 'rgba(6,10,4,.5)'; ctx.fillRect(0, H - 44, W, 44);
   ctx.textAlign = 'left'; ctx.fillStyle = '#cfe0b8'; ctx.font = '700 12px "Courier New", monospace';
   ctx.fillText('\uD83C\uDFC6 Campanha: ' + G.recDias + 'd · pico ' + $(G.recGrana), 20, H - 18);
@@ -7954,6 +8212,7 @@ function desenharMenu() {
   rx = bb(G.telaCheia ? '\u22A1 TELA' : '\u26F6 TELA CHEIA', rx, alternarTelaCheia);
   rx = bb('\uD83D\uDCD6 COMO JOGAR', rx, () => { G.ajuda = true; G.ajudaPag = 0; });
   ctx.textAlign = 'left';
+  if (G.mn && G.mn.sel != null) desenharCaixaAberta();
 }
 
 function desenharOficina() {
@@ -8555,6 +8814,7 @@ window.addEventListener('keydown', e => {
     return;
   }
   if (G.fase === 'menu') {                          // no menu, setas escolhem os dias
+    if (e.code === 'Escape' && G.mn && G.mn.sel != null) { G.mn = { sel: null, t: 0 }; return; }
     if (e.code === 'ArrowLeft') { G.diasCampanha = Math.max(1, G.diasCampanha - 1); return; }
     if (e.code === 'ArrowRight') { G.diasCampanha = Math.min(CFG.DIAS_MAX, G.diasCampanha + 1); return; }
   }
@@ -8621,7 +8881,10 @@ window.addEventListener('keydown', e => {
     case 'KeyA': case 'ArrowLeft': kb.esq = true; break;
     case 'KeyD': case 'ArrowRight': kb.dir = true; break;
     case 'Space':
-      if (G.fase === 'menu') iniciarJogo();
+      if (G.fase === 'menu') {
+        if (G.mn && G.mn.sel != null) { const id = CAPAS[G.mn.sel].id; if (id !== 'duelo') mnPlay(id); }
+        else iniciarJogo();
+      }
       else if (G.fase === 'fim' && G.fimT > 0.6 && !G.duelo) iniciarJogo();
       else if (G.fase === 'plantio') plantar();
       else if (G.fase === 'reforma') {
@@ -8777,7 +9040,8 @@ function loop(ts) {
   update(dt);
   render();
   if (nomeBox) {
-    const mostra = G.fase === 'menu' && !emTelaCheia();
+    const mostra = G.fase === 'menu' && !emTelaCheia() && (!G.mn || G.mn.sel == null)
+      && !(TOQUE && window.innerHeight > window.innerWidth);   // em pé: overlay 'gire' assume a tela
     nomeBox.style.display = mostra ? 'flex' : 'none';
   }
   requestAnimationFrame(loop);
