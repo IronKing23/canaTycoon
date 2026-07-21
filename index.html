@@ -4058,6 +4058,9 @@ function iniciarSobreviv(corIdx) {
   };
   sortearAmbienteSv();
   fazerChaoSv();
+  // ► abertura cinematográfica: "PESADELO NO CANAVIAL"
+  G.sv.tela = 'intro';
+  G.sv.intro = { t: 0, fase: 0, pulou: false };
   gerarMaquinasSv();
   prepararHordaSv(1);
   G.pausa = false;
@@ -4753,8 +4756,35 @@ function svFimSobreviv() {
 }
 
 // ===== LOOP PRINCIPAL =====
+// ═══════════════════ ABERTURA: "PESADELO NO CANAVIAL" ═══════════════════
+// Timeline (segundos):
+//  0.0–3.0  caminhão parado no canavial à noite, mecânico cochilando (Zzz), grilos
+//  3.0–6.0  câmera dá zoom no rosto adormecido; algo se move na cana ao fundo
+//  6.0–7.2  ELE ACORDA sobressaltado (olhos arregalam) + trovão
+//  7.2–10.5 letreiro "PESADELO NO CANAVIAL" surge tremendo, com sangue pingando
+//  10.5+    fade e o jogo começa
+const SV_INTRO_FIM = 10.5;
+function atualizarIntroSv(dt) {
+  const sv = G.sv, it = sv.intro; if (!it) { sv.tela = 'jogo'; return; }
+  it.t += dt;
+  it.fase = it.t < 3 ? 0 : it.t < 6 ? 1 : it.t < 7.2 ? 2 : it.t < SV_INTRO_FIM ? 3 : 4;
+  // SFX pontuais
+  if (!it._sfxTrovao && it.t >= 6.0) { it._sfxTrovao = 1; if (SFX.raio) SFX.raio(); if (SFX.alarme) SFX.alarme(); }
+  if (!it._sfxTitulo && it.t >= 7.2) { it._sfxTitulo = 1; if (SFX.critico) SFX.critico(); else if (SFX.colisao) SFX.colisao(); }
+  if (it.t >= SV_INTRO_FIM) comecarJogoSv();
+}
+function pularIntroSv() {
+  const sv = G.sv; if (!sv || sv.tela !== 'intro') return;
+  comecarJogoSv();
+}
+function comecarJogoSv() {
+  const sv = G.sv; sv.intro = null; sv.tela = 'jogo';
+  sv.introFade = 0.5;                                // clarão curto ao "entrar" no pesadelo
+}
+
 function atualizarSobreviv(dt) {
   const sv = G.sv; if (!sv) return;
+  if (sv.tela === 'intro') { atualizarIntroSv(dt); return; }   // abertura cinematográfica
   if (sv.tela === 'selecao' || !sv.inimigos) return;           // na seleção não há jogo p/ atualizar
   if (sv.fim) { sv.fimT += dt;
     for (let i = sv.particulas.length - 1; i >= 0; i--) { const p = sv.particulas[i]; p.t += dt; if (p.t > p.vida) sv.particulas.splice(i, 1); }
@@ -4810,9 +4840,409 @@ function atualizarSobreviv(dt) {
 }
 
 // ===== RENDER do modo sobrevivência =====
+function desenharIntroSv() {
+  const sv = G.sv, it = sv.intro; if (!it) return;
+  const t = it.t, ease = p => 1 - Math.pow(1 - clamp(p, 0, 1), 3);
+  const corSel = SV_CORES[sv.corIdx] || SV_CORES[0];
+
+  // ── relâmpagos: padrão real (flash duplo + réplicas) ──
+  const fl = (t0, dur) => (t >= t0 && t < t0 + dur) ? 1 - (t - t0) / dur : 0;
+  const flashTrovao = Math.max(fl(6.0, 0.1), fl(6.16, 0.34) * 0.95, fl(6.72, 0.22) * 0.55, fl(8.5, 0.24) * 0.5, fl(9.3, 0.16) * 0.35);
+
+  // ── geometria da cena (foco derivado do rosto real) ──
+  const chao0 = H * 0.72;
+  const tkX0 = W * 0.10, tkY0 = chao0 - 6;
+  const cabX0 = tkX0 + 196, cabW0 = 152, cabTop0 = tkY0 - 104;
+  const jx0 = cabX0 + 14, jy0 = cabTop0 + 12, jw0 = cabW0 - 30, jh0 = 66;
+  const rostoX = jx0 + jw0 * 0.46, rostoY = jy0 + jh0 * 0.5 - 4;
+
+  // ── zoom no rosto ──
+  const zoomProg = ease((t - 0.8) / 5.0);
+  const Z = 1.12 + zoomProg * 2.05 + (it.fase >= 2 ? 0.18 : 0);
+  const tremor = it.fase === 2 ? (7.2 - t) * 7 : it.fase === 3 ? Math.max(0, 1.35 - (t - 7.2)) * 11 : 0;
+  const shx = (Math.random() - 0.5) * tremor, shy = (Math.random() - 0.5) * tremor;
+
+  // ══ CÉU NOTURNO ══
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#07071a'); sky.addColorStop(0.5, '#12102e'); sky.addColorStop(1, '#191326');
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.translate(rostoX + shx, rostoY + shy); ctx.scale(Z, Z); ctx.translate(-rostoX, -rostoY);
+
+  // estrelas + lua
+  ctx.fillStyle = '#fff';
+  for (let i = 0; i < 44; i++) { const sx = (i * 137) % W, sy = (i * 71) % (H * 0.48);
+    ctx.globalAlpha = 0.25 + 0.5 * Math.abs(Math.sin(i * 2.1 + t)); ctx.fillRect(sx, sy, 2, 2); }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#e8e4c8'; ctx.beginPath(); ctx.arc(W * 0.86, H * 0.14, 27, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(18,16,46,.3)'; ctx.beginPath(); ctx.arc(W * 0.885, H * 0.125, 23, 0, 7); ctx.fill();
+  // raio riscando o céu no clarão
+  if (flashTrovao > 0.35) {
+    ctx.strokeStyle = 'rgba(210,220,255,' + flashTrovao.toFixed(2) + ')'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(W * 0.72, -8); ctx.lineTo(W * 0.69, H * 0.12); ctx.lineTo(W * 0.73, H * 0.2); ctx.lineTo(W * 0.7, H * 0.34); ctx.stroke();
+    ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(W * 0.73, H * 0.2); ctx.lineTo(W * 0.78, H * 0.3); ctx.stroke();
+  }
+
+  // ══ O BICHO GIGANTE (javali colossal) — revelado pelos relâmpagos ══
+  if (t >= 3.5 || flashTrovao > 0) desenharBichoGiganteIntro(t, flashTrovao, chao0);
+
+  // ══ CANAVIAL (silhueta em camadas) ══
+  const chao = chao0;
+  for (let cam = 0; cam < 3; cam++) {
+    const yy = chao - cam * 26, tom = ['#0a1a08', '#0e230c', '#123010'][cam];
+    ctx.fillStyle = tom; ctx.fillRect(0, yy, W, H - yy);
+    ctx.strokeStyle = tom; ctx.lineWidth = 3;
+    for (let i = 0; i < 44; i++) { const bx = (i * 23 + cam * 11) % (W + 20) - 10;
+      const sway = Math.sin(t * 1.2 + i + cam) * (4 + cam * 2) + flashTrovao * 6;
+      ctx.beginPath(); ctx.moveTo(bx, yy + 6); ctx.quadraticCurveTo(bx + sway, yy - 20 - cam * 6, bx + sway * 1.6, yy - 40 - cam * 10); ctx.stroke(); }
+  }
+  // vaga-lumes
+  for (let i = 0; i < 12; i++) { const fx = (i * 83 + Math.sin(t * 0.7 + i) * 40) % W;
+    const fy = chao - 30 + Math.sin(t * 1.3 + i * 2) * 20; const gl = 0.4 + 0.6 * Math.abs(Math.sin(t * 3 + i));
+    ctx.fillStyle = 'rgba(180,255,120,' + (gl * 0.6).toFixed(2) + ')'; ctx.beginPath(); ctx.arc(fx, fy, 2.2, 0, 7); ctx.fill(); }
+
+  // ══ O CAMINHÃO ══
+  desenharCaminhaoIntro(tkX0, tkY0, cabX0, cabW0, cabTop0, jx0, jy0, jw0, jh0, corSel, t, it, flashTrovao);
+
+  ctx.restore();  // fim do zoom
+
+  // clarão do trovão por cima de tudo
+  if (flashTrovao > 0) { ctx.fillStyle = 'rgba(185,195,255,' + (flashTrovao * 0.42).toFixed(2) + ')'; ctx.fillRect(0, 0, W, H); }
+
+  // ══ VINHETA ══
+  const vig = ctx.createRadialGradient(W / 2, H / 2, H * 0.28, W / 2, H / 2, H * 0.8);
+  vig.addColorStop(0, 'rgba(0,0,0,0)'); vig.addColorStop(1, 'rgba(0,0,0,.72)');
+  ctx.fillStyle = vig; ctx.fillRect(0, 0, W, H);
+
+  // ══ LETREIRO ══
+  if (it.fase >= 3) desenharLetreiroIntro(t - 7.2);
+
+  // ══ letterbox ══
+  const barH = H * 0.10 * clamp(t / 0.6, 0, 1) * (it.fase >= 4 ? clamp((SV_INTRO_FIM - t) / 0.4, 0, 1) : 1);
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, barH); ctx.fillRect(0, H - barH, W, barH);
+
+  // dica de pular
+  if (t > 0.8 && it.fase < 3) {
+    ctx.globalAlpha = 0.4 + 0.2 * Math.sin(t * 3); ctx.textAlign = 'right';
+    ctx.fillStyle = '#cfe0b8'; ctx.font = '700 12px "Courier New", monospace';
+    ctx.fillText(TOQUE ? 'toque para pular ▸' : 'ESPAÇO para pular ▸', W - 20, H - barH - 12);
+    ctx.globalAlpha = 1; ctx.textAlign = 'left';
+  }
+
+  // fade final
+  if (it.fase >= 4 || t > SV_INTRO_FIM - 0.5) {
+    const fo = clamp((t - (SV_INTRO_FIM - 0.5)) / 0.5, 0, 1);
+    ctx.fillStyle = 'rgba(0,0,0,' + fo.toFixed(2) + ')'; ctx.fillRect(0, 0, W, H);
+  }
+}
+
+// ── o javali colossal erguendo-se acima da cana (direita da cena) ──
+function desenharBichoGiganteIntro(t, flash, chao) {
+  const bx = W * 0.535, by = chao - 132;                      // atrás da cabine — dentro do enquadramento do zoom
+  const resp = 1 + Math.sin(t * 1.1) * 0.012;                 // respiração pesada
+  const prenuncio = clamp((t - 3.5) / 2.2, 0, 1) * 0.9;      // fase 1: só os olhos acendendo no escuro
+  // corpo: forte nos flashes; depois do 1º trovão fica um vulto quase-negro permanente
+  const silAlpha = Math.max(flash * 0.95, t >= 6.1 ? 0.6 : 0);
+  ctx.save(); ctx.translate(bx, by); ctx.scale(resp * 1.12, resp * 1.12);
+  if (silAlpha <= 0.01) {                                     // antes do trovão: apenas os olhos-prenúncio
+    if (prenuncio > 0.02) { const pisc = 0.75 + 0.25 * Math.sin(t * 2.2);
+      ctx.fillStyle = 'rgba(255,42,28,' + (prenuncio * pisc).toFixed(2) + ')';
+      ctx.beginPath(); ctx.arc(-128, 8, 6, 0, 7); ctx.arc(-88, 12, 6, 0, 7); ctx.fill(); }
+    ctx.restore(); return;
+  }
+  const corSil = 'rgba(5,8,14,' + Math.min(0.92, silAlpha).toFixed(2) + ')';
+  const rim = 'rgba(170,185,255,' + (flash * 0.8).toFixed(2) + ')';   // luz de contorno do relâmpago
+  // corpo massivo
+  ctx.fillStyle = corSil; ctx.beginPath(); ctx.ellipse(30, 10, 150, 92, -0.06, 0, 7); ctx.fill();
+  // cabeça enorme, baixa (postura de ataque)
+  ctx.beginPath(); ctx.ellipse(-118, 38, 78, 62, 0.12, 0, 7); ctx.fill();
+  // focinho
+  ctx.beginPath(); ctx.ellipse(-186, 58, 30, 24, 0.1, 0, 7); ctx.fill();
+  // orelhas pontudas
+  ctx.beginPath(); ctx.moveTo(-96, -14); ctx.lineTo(-78, -66); ctx.lineTo(-52, -18); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-140, -8); ctx.lineTo(-132, -52); ctx.lineTo(-104, -12); ctx.closePath(); ctx.fill();
+  // cerdas eriçadas da crista (costas)
+  for (let i = 0; i < 9; i++) { const cx2 = -60 + i * 26, h2 = 26 + (i % 3) * 12;
+    ctx.beginPath(); ctx.moveTo(cx2 - 8, -62); ctx.lineTo(cx2, -62 - h2); ctx.lineTo(cx2 + 8, -62); ctx.closePath(); ctx.fill(); }
+  // patas grossas descendo entre a cana
+  ctx.fillRect(-96, 70, 34, 60); ctx.fillRect(-10, 78, 36, 56); ctx.fillRect(96, 74, 34, 60);
+  // PRESAS gigantes (brancas — visíveis mesmo no escuro)
+  const presaA = Math.max(flash, t >= 6.1 ? 0.75 : 0);
+  ctx.fillStyle = 'rgba(235,228,208,' + presaA.toFixed(2) + ')';
+  ctx.beginPath(); ctx.moveTo(-176, 62); ctx.quadraticCurveTo(-206, 26, -178, -2); ctx.quadraticCurveTo(-186, 30, -162, 56); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-146, 72); ctx.quadraticCurveTo(-172, 44, -152, 16); ctx.quadraticCurveTo(-158, 46, -136, 68); ctx.closePath(); ctx.fill();
+  // OLHOS vermelhos brilhando (permanentes após o trovão)
+  const olhoA = Math.max(flash, t >= 6.05 ? 1 : 0);
+  ctx.shadowColor = 'rgba(255,30,20,.9)'; ctx.shadowBlur = 14 * olhoA;
+  ctx.fillStyle = 'rgba(255,42,28,' + olhoA.toFixed(2) + ')';
+  ctx.beginPath(); ctx.arc(-128, 8, 7, 0, 7); ctx.arc(-88, 12, 7, 0, 7); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(255,190,170,' + olhoA.toFixed(2) + ')';
+  ctx.beginPath(); ctx.arc(-130, 6, 2.4, 0, 7); ctx.arc(-90, 10, 2.4, 0, 7); ctx.fill();
+  // contorno iluminado pelo relâmpago (rim light)
+  if (flash > 0.12) { ctx.strokeStyle = rim; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(30, 10, 150, 92, -0.06, 3.5, 5.6); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(-118, 38, 78, 62, 0.12, 2.6, 4.6); ctx.stroke();
+    for (let i = 0; i < 9; i++) { const cx2 = -60 + i * 26, h2 = 26 + (i % 3) * 12;
+      ctx.beginPath(); ctx.moveTo(cx2 - 8, -62); ctx.lineTo(cx2, -62 - h2); ctx.stroke(); } }
+  // vapor das narinas (fases 2+)
+  if (t >= 6.4) { for (let k = 0; k < 3; k++) { const vt = (t * 0.9 + k * 0.45) % 1.3;
+    ctx.fillStyle = 'rgba(180,190,210,' + ((1 - vt / 1.3) * 0.25).toFixed(2) + ')';
+    ctx.beginPath(); ctx.arc(-196 - vt * 26, 52 - vt * 34, 6 + vt * 10, 0, 7); ctx.fill(); } }
+  ctx.restore();
+}
+
+// ── caminhão detalhado + mecânico caprichado na cabine ──
+function desenharCaminhaoIntro(tkX, tkY, cabX, cabW, cabTop, jx, jy, jw, jh, corSel, t, it, flash) {
+  const acordado = it.fase >= 2;
+  const desperta = clamp((t - 6.0) / 0.5, 0, 1);
+  // sombra
+  ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.beginPath(); ctx.ellipse(tkX + 190, tkY + 9, 220, 16, 0, 0, 7); ctx.fill();
+  // ── caçamba com cana ──
+  ctx.fillStyle = '#3a2e22'; ctx.fillRect(tkX, tkY - 78, 196, 78);
+  ctx.fillStyle = '#4a3c2c'; ctx.fillRect(tkX, tkY - 78, 196, 6);
+  ctx.fillStyle = '#241c12'; ctx.fillRect(tkX, tkY - 22, 196, 22);
+  for (let i = 0; i < 6; i++) { ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.fillRect(tkX + 10 + i * 31, tkY - 72, 3, 66); }
+  ctx.strokeStyle = '#4a5a24'; ctx.lineWidth = 4;
+  for (let i = 0; i < 13; i++) { const bx2 = tkX + 12 + i * 14;
+    ctx.beginPath(); ctx.moveTo(bx2, tkY - 78); ctx.lineTo(bx2 + Math.sin(i) * 6, tkY - 102); ctx.stroke(); }
+  ctx.strokeStyle = '#5a6e2c'; ctx.lineWidth = 2;
+  for (let i = 0; i < 8; i++) { const bx2 = tkX + 18 + i * 22;
+    ctx.beginPath(); ctx.moveTo(bx2, tkY - 82); ctx.lineTo(bx2 + 4, tkY - 98); ctx.stroke(); }
+  // ── cabine (lataria com brilho) ──
+  const lat = ctx.createLinearGradient(cabX, cabTop, cabX, tkY);
+  lat.addColorStop(0, corSel.cor || '#3a6ea5'); lat.addColorStop(0.45, corSel.cor2 || '#274a78'); lat.addColorStop(1, '#161c26');
+  ctx.fillStyle = lat; ctx.fillRect(cabX, cabTop, cabW, tkY - cabTop);
+  ctx.fillStyle = 'rgba(255,255,255,.1)'; ctx.fillRect(cabX + 4, cabTop + 4, cabW - 8, 6);
+  // teto + escape
+  ctx.fillStyle = '#20180f'; ctx.fillRect(cabX - 5, cabTop - 7, cabW + 10, 11);
+  ctx.fillStyle = '#3a342c'; ctx.fillRect(cabX + cabW - 14, cabTop - 44, 9, 40);
+  ctx.fillStyle = '#54493c'; ctx.fillRect(cabX + cabW - 15, cabTop - 46, 11, 5);
+  // fumacinha do escape (motor desligado: bem sutil)
+  for (let k = 0; k < 2; k++) { const st2 = (t * 0.5 + k * 0.6) % 1.4;
+    ctx.fillStyle = 'rgba(120,120,130,' + ((1 - st2 / 1.4) * 0.12).toFixed(2) + ')';
+    ctx.beginPath(); ctx.arc(cabX + cabW - 9 + Math.sin(t + k) * 3, cabTop - 48 - st2 * 24, 4 + st2 * 5, 0, 7); ctx.fill(); }
+  // para-choque + farol (apagado; pisca fraco no trovão)
+  ctx.fillStyle = '#4a5058'; ctx.fillRect(cabX + cabW - 6, tkY - 26, 10, 22);
+  ctx.fillStyle = flash > 0.2 ? 'rgba(255,240,190,.5)' : '#5a5140';
+  ctx.beginPath(); ctx.arc(cabX + cabW + 1, tkY - 34, 5, 0, 7); ctx.fill();
+  // retrovisor
+  ctx.strokeStyle = '#20180f'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(cabX + 4, cabTop + 20); ctx.lineTo(cabX - 10, cabTop + 14); ctx.stroke();
+  ctx.fillStyle = '#8fa8c0'; ctx.fillRect(cabX - 16, cabTop + 8, 8, 12);
+  // ── janela ──
+  ctx.fillStyle = '#0a0a14'; ctx.fillRect(jx - 4, jy - 4, jw + 8, jh + 8);
+  const vg = ctx.createLinearGradient(jx, jy, jx + jw, jy + jh);
+  vg.addColorStop(0, '#182236'); vg.addColorStop(0.5, '#0c121e'); vg.addColorStop(1, '#182236');
+  ctx.fillStyle = vg; ctx.fillRect(jx, jy, jw, jh);
+  // interior: encosto do banco + volante
+  ctx.fillStyle = '#221a12'; ctx.fillRect(jx + jw - 26, jy + 8, 20, jh - 12);
+  ctx.fillStyle = '#2c221a'; ctx.fillRect(jx + jw - 26, jy + 8, 20, 5);
+  ctx.strokeStyle = '#101418'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.arc(jx + 16, jy + jh - 8, 13, 3.4, 6.0); ctx.stroke();
+
+  // ══ O MECÂNICO (detalhado) ══
+  const mcx = jx + jw * 0.46, mcy = jy + jh * 0.52;
+  const respira = Math.sin(t * 1.6) * (acordado ? 0.4 : 1.4);       // peito sobe/desce
+  const tilt = acordado ? (1 - desperta) * 0.42 : 0.42 + Math.sin(t * 1.5) * 0.05;
+  ctx.save(); ctx.translate(mcx, mcy + (acordado ? 0 : respira));
+  // ─ torso (macacão) ─
+  ctx.save(); ctx.rotate(tilt * 0.3);
+  ctx.fillStyle = corSel.cor || '#3a6ea5'; ctx.fillRect(-16, 4, 32, 26);
+  ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(-16, 4, 7, 26);           // sombra lateral
+  ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(4, 6, 8, 22);       // luz
+  ctx.fillStyle = corSel.cor2 || '#274a78';                                  // alças
+  ctx.fillRect(-11, 4, 5, 14); ctx.fillRect(6, 4, 5, 14);
+  ctx.fillStyle = '#c9a020'; ctx.fillRect(-10.5, 10, 4, 3); ctx.fillRect(6.5, 10, 4, 3);  // fivelas
+  ctx.fillStyle = '#d8c8a8'; ctx.fillRect(-4, 4, 9, 7);                      // camisa no peito
+  // bolso com caneta
+  ctx.fillStyle = corSel.cor2 || '#274a78'; ctx.fillRect(-2, 16, 10, 9);
+  ctx.fillStyle = '#e04a3a'; ctx.fillRect(0, 14, 2, 5);
+  // ─ braço esquerdo caído sobre o volante ─
+  ctx.fillStyle = corSel.cor || '#3a6ea5';
+  ctx.save(); ctx.translate(-13, 10); ctx.rotate(acordado ? -0.5 + desperta * 0.9 : 0.6);
+  ctx.fillRect(-4, 0, 8, 18);
+  ctx.fillStyle = '#e0b088'; ctx.beginPath(); ctx.arc(0, 20, 4.5, 0, 7); ctx.fill();  // mão
+  ctx.fillStyle = '#c8925e'; ctx.fillRect(-4, 17, 8, 2);
+  ctx.restore();
+  ctx.restore();
+  // ─ cabeça ─
+  ctx.save(); ctx.rotate(tilt);
+  // pescoço
+  ctx.fillStyle = '#c8925e'; ctx.fillRect(-4, -2, 9, 6);
+  // rosto (com sombreamento)
+  ctx.fillStyle = '#e0b088'; ctx.beginPath(); ctx.ellipse(0, -13, 13, 13.5, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#f0c8a0'; ctx.beginPath(); ctx.ellipse(-4.5, -16.5, 6, 6, 0, 0, 7); ctx.fill();   // luz
+  ctx.fillStyle = '#c8925e'; ctx.beginPath(); ctx.ellipse(0, -7.5, 11.5, 5, 0, 0, 3.14); ctx.fill(); // sombra maxilar
+  // orelha
+  ctx.fillStyle = '#d8a878'; ctx.beginPath(); ctx.ellipse(11, -12, 3.4, 4.4, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#b0805a'; ctx.beginPath(); ctx.ellipse(11.4, -12, 1.6, 2.4, 0, 0, 7); ctx.fill();
+  // nariz
+  ctx.fillStyle = '#d09868'; ctx.beginPath(); ctx.ellipse(-9, -10.5, 3.2, 2.6, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#f0c8a0'; ctx.beginPath(); ctx.arc(-10, -11.5, 1.1, 0, 7); ctx.fill();
+  // bigodinho
+  ctx.fillStyle = '#5a3a1e'; ctx.beginPath(); ctx.ellipse(-4, -6.5, 5.5, 2, 0.12, 0, 7); ctx.fill();
+  // barba por fazer (pontinhos)
+  ctx.fillStyle = 'rgba(90,58,30,.35)';
+  for (let i = 0; i < 8; i++) ctx.fillRect(-7 + (i % 4) * 4, -4 + (i / 4 | 0) * 2.5, 1, 1);
+  if (!acordado) {
+    // ── DORMINDO ──
+    ctx.strokeStyle = '#3a2416'; ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(-6.5, -13, 3.2, 0.35, 2.8); ctx.stroke();       // pálpebras (curvas p/ baixo)
+    ctx.beginPath(); ctx.arc(3.5, -13, 3.2, 0.35, 2.8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-9.5, -11.6); ctx.lineTo(-10.6, -12.4); ctx.moveTo(6.5, -11.6); ctx.lineTo(7.6, -12.4); ctx.stroke();  // cílios
+    // sobrancelhas relaxadas
+    ctx.strokeStyle = '#6a4626'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-9.5, -17.5); ctx.quadraticCurveTo(-6, -19, -3, -17.8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0.8, -17.8); ctx.quadraticCurveTo(3.8, -19, 6.8, -17.5); ctx.stroke();
+    // boca entreaberta roncando (abre/fecha devagar)
+    const ronco = 1.4 + Math.sin(t * 1.6) * 1.1;
+    ctx.fillStyle = '#7a3a2a'; ctx.beginPath(); ctx.ellipse(-2, -2.5, 3.2, ronco, 0, 0, 7); ctx.fill();
+    // bolha de baba no canto da boca (infla e treme)
+    const bub = 2.4 + Math.sin(t * 1.6) * 1.6 + Math.sin(t * 9) * 0.25;
+    ctx.fillStyle = 'rgba(190,225,255,.55)'; ctx.beginPath(); ctx.arc(3.5, -1.5, Math.max(0.8, bub), 0, 7); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.75)'; ctx.beginPath(); ctx.arc(2.6, -2.6, Math.max(0.3, bub * 0.3), 0, 7); ctx.fill();
+  } else {
+    // ── SUSTO ──
+    const ab = 1 + desperta * 1.5;
+    // olhos ENORMES brancos
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.ellipse(-6, -13.5, 3.6 * ab, 4.1 * ab, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(4, -13.5, 3.6 * ab, 4.1 * ab, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#3a2416'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.ellipse(-6, -13.5, 3.6 * ab, 4.1 * ab, 0, 0, 7); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(4, -13.5, 3.6 * ab, 4.1 * ab, 0, 0, 7); ctx.stroke();
+    // íris + pupila mínima tremendo
+    const trme = Math.sin(t * 30) * 0.5;
+    ctx.fillStyle = '#6a4626';
+    ctx.beginPath(); ctx.arc(-6 + trme, -13.5, 1.7, 0, 7); ctx.arc(4 + trme, -13.5, 1.7, 0, 7); ctx.fill();
+    ctx.fillStyle = '#180e04';
+    ctx.beginPath(); ctx.arc(-6 + trme, -13.5, 0.8, 0, 7); ctx.arc(4 + trme, -13.5, 0.8, 0, 7); ctx.fill();
+    // sobrancelhas arqueadas de pavor
+    ctx.strokeStyle = '#6a4626'; ctx.lineWidth = 2.2;
+    ctx.beginPath(); ctx.moveTo(-10.5, -18); ctx.quadraticCurveTo(-6, -22.5, -1.8, -19.5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-0.2, -19.5); ctx.quadraticCurveTo(4, -22.5, 8.5, -18); ctx.stroke();
+    // boca escancarada com dentes
+    const grito = desperta;
+    ctx.fillStyle = '#4a1812'; ctx.beginPath(); ctx.ellipse(-1.5, -2, 4, 5.4 * grito, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#f0e8d8'; ctx.fillRect(-4.6, -6.2, 6.4, 1.8 * grito);
+    ctx.fillStyle = '#c04838'; ctx.beginPath(); ctx.ellipse(-1.5, 1.2, 2.2, 1.7 * grito, 0, 0, 7); ctx.fill();
+    // gotas de suor voando
+    ctx.fillStyle = 'rgba(170,215,255,.9)';
+    for (let k = 0; k < 4; k++) { const sa = -2.2 + k * 1.05, sd = 13 + desperta * (7 + k * 3);
+      const gx = Math.cos(sa) * sd, gy = -13 + Math.sin(sa) * sd;
+      ctx.beginPath(); ctx.ellipse(gx, gy, 1.5, 2.6, sa + 1.57, 0, 7); ctx.fill(); }
+  }
+  // ─ capacete (com viseira, crista e brilho; pula no susto) ─
+  const capJump = acordado ? Math.max(0, Math.sin(desperta * 3.14)) * 5 : 0;
+  ctx.save(); ctx.translate(0, -capJump);
+  ctx.fillStyle = '#d8a810'; ctx.beginPath(); ctx.arc(0, -18, 14, Math.PI, 0); ctx.fill();
+  ctx.fillStyle = '#f0c020'; ctx.beginPath(); ctx.arc(0, -18.5, 13, Math.PI * 1.06, -0.06); ctx.fill();
+  ctx.fillStyle = '#fff6d0'; ctx.beginPath(); ctx.ellipse(-5.5, -25, 4, 2.6, -0.4, 0, 7); ctx.fill();
+  ctx.fillStyle = '#c89810'; ctx.fillRect(-15, -19, 30, 4.5);                // aba
+  ctx.fillStyle = '#e8b820'; ctx.fillRect(-15, -19, 30, 2);
+  ctx.fillStyle = '#b88808'; ctx.fillRect(-1.4, -32, 2.8, 14);               // crista
+  ctx.fillStyle = 'rgba(0,0,0,.2)'; ctx.fillRect(-11, -21, 5, 1.6);          // risco de uso
+  ctx.restore();
+  ctx.restore();  // cabeça
+  ctx.restore();  // mecânico
+
+  // Zzz (dormindo)
+  if (it.fase <= 1) {
+    ctx.textAlign = 'left';
+    for (let i = 0; i < 3; i++) { const zt = (t * 0.6 + i * 0.5) % 2;
+      ctx.globalAlpha = clamp(1 - zt / 2, 0, 1) * 0.8;
+      ctx.fillStyle = '#c8dcff'; ctx.font = 'italic 700 ' + (12 + i * 5) + 'px "Courier New", monospace';
+      ctx.fillText('z', jx + jw + 6 + i * 10, jy - 2 - zt * 24); }
+    ctx.globalAlpha = 1;
+  }
+  // ponto de exclamação no susto
+  if (it.fase === 2) { const ex = clamp((t - 6.05) / 0.25, 0, 1);
+    ctx.fillStyle = 'rgba(255,220,60,' + ex.toFixed(2) + ')'; ctx.textAlign = 'center';
+    ctx.font = '900 ' + (20 + ex * 10) + 'px "Segoe UI", sans-serif';
+    ctx.fillText('!', jx + jw * 0.46, jy - 14 - ex * 8); ctx.textAlign = 'left'; }
+
+  // rodas
+  for (const wx of [tkX + 42, tkX + 148, cabX + 66]) {
+    ctx.fillStyle = '#14100c'; ctx.beginPath(); ctx.arc(wx, tkY, 22, 0, 7); ctx.fill();
+    ctx.fillStyle = '#2a2620'; ctx.beginPath(); ctx.arc(wx, tkY, 10, 0, 7); ctx.fill();
+    ctx.fillStyle = '#3e382e'; ctx.beginPath(); ctx.arc(wx, tkY, 4, 0, 7); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.06)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(wx, tkY, 16, 0.6, 2.2); ctx.stroke();
+  }
+}
+
+// ── letreiro dramático: slam + rachaduras + sangue escorrendo ──
+function desenharLetreiroIntro(tt) {
+  const ease = p => 1 - Math.pow(1 - clamp(p, 0, 1), 3);
+  const apar = ease(tt / 0.5);
+  const slam = 1 + Math.max(0, 1 - tt / 0.22) * 1.9;             // entra gigante e BATE
+  const jit = Math.max(0, 1 - tt) * 3;
+  const F1 = MOBILE ? 52 : 76, F2 = MOBILE ? 22 : 31;
+  const pul = 0.5 + 0.5 * Math.sin(tt * 5);
+  ctx.save();
+  ctx.translate(W / 2 + (Math.random() - 0.5) * jit, H / 2 - 8 + (Math.random() - 0.5) * jit);
+  ctx.scale(slam, slam);
+  ctx.globalAlpha = apar; ctx.textAlign = 'center';
+  // sombra dura descolada
+  ctx.fillStyle = 'rgba(0,0,0,.85)'; ctx.font = '900 ' + F1 + 'px "Segoe UI", sans-serif';
+  ctx.fillText('PESADELO', 4, -6);
+  // glow vermelho pulsante
+  ctx.shadowColor = 'rgba(220,20,10,' + (0.7 + pul * 0.3).toFixed(2) + ')'; ctx.shadowBlur = 34 + pul * 18;
+  ctx.fillStyle = '#7a0c06'; ctx.fillText('PESADELO', 0, -10);
+  ctx.shadowBlur = 0;
+  // preenchimento sangrento
+  const g2 = ctx.createLinearGradient(0, -F1 * 0.9, 0, 8);
+  g2.addColorStop(0, '#ff5040'); g2.addColorStop(0.55, '#c81408'); g2.addColorStop(1, '#7a0a04');
+  ctx.fillStyle = g2; ctx.fillText('PESADELO', 0, -10);
+  ctx.strokeStyle = '#1a0201'; ctx.lineWidth = 3; ctx.strokeText('PESADELO', 0, -10);
+  // rachaduras atravessando as letras
+  if (tt > 0.2) { ctx.strokeStyle = 'rgba(10,2,1,.9)'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    const rk = [[-150, -46, -128, -22, -140, -2], [-24, -54, -6, -30, -18, -8], [116, -50, 132, -26, 122, -4]];
+    for (const [x1, y1, x2, y2, x3, y3] of rk) {
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.lineTo(x3, y3); ctx.stroke();
+      ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x2 + 10, y2 + 4); ctx.stroke(); ctx.lineWidth = 2; } }
+  // subtítulo espaçado estilo terror
+  ctx.fillStyle = '#e8d0b0'; ctx.font = '700 ' + F2 + 'px "Courier New", monospace';
+  const sub = 'NO CANAVIAL'; let sw = 0; const esp = F2 * 0.86;
+  ctx.textAlign = 'left'; const x0 = -(sub.length - 1) * esp / 2;
+  ctx.shadowColor = 'rgba(0,0,0,.9)'; ctx.shadowBlur = 6;
+  for (let i = 0; i < sub.length; i++) ctx.fillText(sub[i], x0 + i * esp - F2 * 0.3, F1 * 0.62);
+  ctx.shadowBlur = 0; ctx.textAlign = 'center';
+  // riscos de garra atrás do subtítulo
+  ctx.strokeStyle = 'rgba(200,24,10,.7)'; ctx.lineWidth = 2.4; ctx.lineCap = 'round';
+  for (let k = -1; k <= 1; k++) { ctx.beginPath();
+    ctx.moveTo(-190 + k * 8, F1 * 0.34 + k * 5); ctx.lineTo(196 + k * 8, F1 * 0.56 + k * 5); ctx.stroke(); }
+
+  // ══ SANGUE escorrendo das letras (grosso, com gotas que se soltam) ══
+  const drips = [[-192, 3.4, 66, 0.0], [-148, 2.2, 44, 0.35], [-108, 4.4, 88, 0.12], [-62, 2.6, 52, 0.5],
+                 [-18, 3.6, 96, 0.05], [22, 2.2, 40, 0.6], [66, 4.0, 76, 0.2], [112, 2.8, 58, 0.42],
+                 [156, 3.4, 84, 0.1], [192, 2.4, 48, 0.55]];
+  for (const [dx, wdt, maxL, dly] of drips) {
+    const dt2 = Math.max(0, tt - 0.35 - dly);
+    const len = Math.min(dt2 * 52, maxL);
+    if (len <= 0) continue;
+    const gd = ctx.createLinearGradient(0, -10, 0, -10 + len);
+    gd.addColorStop(0, '#c81408'); gd.addColorStop(1, '#6a0803');
+    ctx.fillStyle = gd; ctx.fillRect(dx - wdt / 2, -10, wdt, len);
+    // gota bulbosa na ponta
+    ctx.fillStyle = '#a00c06'; ctx.beginPath(); ctx.ellipse(dx, -10 + len, wdt * 0.85, wdt * 1.15, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = 'rgba(255,120,100,.5)'; ctx.beginPath(); ctx.arc(dx - wdt * 0.25, -10 + len - wdt * 0.4, wdt * 0.28, 0, 7); ctx.fill();
+    // pingo que se solta e cai quando o escorrido satura
+    if (len >= maxL) { const queda = (dt2 * 52 - maxL) * 2.2;
+      const qy = -10 + maxL + 8 + queda * queda * 0.5;
+      if (qy < H) { ctx.fillStyle = '#b00e06';
+        ctx.beginPath(); ctx.ellipse(dx, qy, wdt * 0.55, wdt * 0.95, 0, 0, 7); ctx.fill(); } }
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1; ctx.textAlign = 'left';
+}
+
 function renderSobreviv() {
   const sv = G.sv; if (!sv) return;
   if (sv.tela === 'selecao') return desenharSelecaoSv();
+  if (sv.tela === 'intro') return desenharIntroSv();
   const Z = (MOBILE ? CFG.ZOOM_MOBILE : 1) * 1.15;             // zoom um pouco maior (personagem em foco)
   const vw = W / Z, vh = H / Z;
   let camx = clamp(sv.cam.x - vw / 2, 0, MW - vw), camy = clamp(sv.cam.y - vh / 2, 0, MH - vh);
@@ -4899,6 +5329,7 @@ function renderSobreviv() {
   if (sv.invT > 0.4) { ctx.fillStyle = 'rgba(200,30,20,' + ((sv.invT - 0.4) * 0.6).toFixed(3) + ')'; ctx.fillRect(0, 0, W, H); }
 
   desenharHUDSv();
+  if (sv.introFade > 0) { ctx.fillStyle = 'rgba(255,255,255,' + (sv.introFade).toFixed(2) + ')'; ctx.fillRect(0, 0, W, H); sv.introFade -= 1 / 30; }
   if (sv.colapso && !sv.fim && !sv.upOpcoes) desenharColapsoSv();
   if (G.pausa && !sv.upOpcoes && !sv.fim) desenharPausaSv();
   if (sv.upOpcoes) desenharUpgradeSv();
@@ -8819,6 +9250,10 @@ window.addEventListener('keydown', e => {
     if (e.code === 'ArrowRight') { G.diasCampanha = Math.min(CFG.DIAS_MAX, G.diasCampanha + 1); return; }
   }
   if (G.fase === 'surviv') {                        // sobrevivência horda: combate souls
+    if (G.sv && G.sv.tela === 'intro') {             // abertura: qualquer tecla pula
+      if (e.code === 'Space' || e.code === 'Enter' || e.code === 'Escape') pularIntroSv();
+      return;
+    }
     if (e.code === 'Space') { svAparar(); return; }
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { svRolar(); return; }
   }
@@ -8950,6 +9385,7 @@ canvas.addEventListener('pointerdown', e => {
   }
   if (G.fase === 'surviv') {
     const sv = G.sv; if (!sv || sv.tela === 'selecao' || sv.fim || sv.upOpcoes) return;
+    if (sv.tela === 'intro') { pularIntroSv(); return; }        // toque pula a abertura
     if (TOQUE) sv.joy = { id: e.pointerId, ox: x, oy: y, dx: 0, dy: 0, ativo: true };
     return;
   }
@@ -9091,6 +9527,7 @@ globalThis.__T = {
          gerarMaquinasSv, atualizarMaquinasSv, maquinaConsertavel, comprarUpgradeSv, fecharLojaSv,
          sortearAmbienteSv, fazerChaoSv, atualizarClimaSv, SV_BIOMAS, SV_CLIMAS, desenharColapsoSv,
          svRolar, svAparar, atualizarSoulsSv, svResolverAtaque, svExecutar, svDirecaoAtual, svInimigoMaisProximo,
+    atualizarIntroSv, desenharIntroSv, pularIntroSv, comecarJogoSv,
          svFimSobreviv, moverJogadorSv, SV_ARMAS, SV_BICHOS, SV_CORES, construirAvatar,
          iniciarSurvivor, atualizarSurvivor, criarInimigo, criarBoss, ganharXP,
          abrirEscolha, escolherMelhoria, fimSurvivor, spawnInimigo,
