@@ -224,6 +224,8 @@ const CFG = {
   DIAS_PADRAO: 2, DIAS_MAX: 5,        // ciclo de safra escolhido no início
   ZOOM_MOBILE: 1.5,                  // câmera dá zoom no celular (tudo maior)
   SV_VEL: 200, SV_HP: 100, SV_RAIO: 13, CHAVE_SV: 'canaTycoon_survRec',   // sobrevivência de horda
+  SV_BOSS_CADA: 2, SV_BOSS_TOTAL: 6, CHAVE_SV_RANK: 'canaTycoon_survRank',  // bosses do folclore + placar
+  SV_RAGE_MAX: 100, SV_RAGE_DUR: 9, SV_GARRA_CD: 0.3, SV_GARRA_ALC: 62, // fúria do lobisomem
   SV_MAQ_CONSERTO: 2.2, SV_MAQ_RAIO: 46,   // segundos p/ consertar + raio de interação com máquina
   SV_COLAPSO: 30,                          // prazo (s) p/ religar 1 máquina quando TODAS quebram
   // ── combate estilo Souls ──
@@ -4050,6 +4052,8 @@ function iniciarSobreviv(corIdx) {
     rolando: 0, rolAng: 0, rolCd: 0, iframes: 0,          // rolamento + invencibilidade
     parryT: 0, parryCd: 0, parryRecup: 0, parryFlash: 0,  // aparo (parry)
     hitStop: 0, combos: 0, parries: 0,                    // hit-stop + estatísticas de estilo
+    furia: 0, rage: 0, garraT: 0, garrasDadas: 0,         // ── modo FÚRIA (lobisomem) ──
+    bossesMortos: 0, bossSpawned: false, vitoria: false,  // ── bosses do folclore ──
     upOpcoes: null, mestreAtual: null,
     recorde: rec, fim: false, fimT: 0, novoRec: false,
     joy: null, mira: { x: 1, y: 0 },
@@ -4068,9 +4072,17 @@ function iniciarSobreviv(corIdx) {
 
 function prepararHordaSv(n) {
   const sv = G.sv; sv.horda = n; sv.emHorda = false; sv.entreHordas = n === 1 ? 2.5 : 3;
-  sv.aVencer = 6 + n * 3;                                        // inimigos a matar nesta horda
-  sv.mortos = 0; sv.spawnT = 0;
-  svFlut('🌾 HORDA ' + n + ' se aproxima...', MW / 2, MH / 2 - 60, '#ffd94d');
+  sv.bossSpawned = false;
+  const bIdx = bossDaHorda(n);
+  if (bIdx != null) {                                            // ► horda de BOSS do folclore
+    const b = SV_BOSSES[bIdx];
+    sv.aVencer = b.grupo || 1; sv.mortos = 0; sv.spawnT = 0;
+    svFlut('⚠️ ' + b.emoji + ' ' + b.nome + ' ' + b.emoji + ' ⚠️', MW / 2, MH / 2 - 60, '#ff5a40');
+  } else {
+    sv.aVencer = 6 + n * 3;                                      // inimigos a matar nesta horda
+    sv.mortos = 0; sv.spawnT = 0;
+    svFlut('🌾 HORDA ' + n + ' se aproxima...', MW / 2, MH / 2 - 60, '#ffd94d');
+  }
 }
 
 function svComecarHorda() {
@@ -4088,6 +4100,44 @@ const SV_BICHOS = {
   alien:    { hp: 8, vel: 60, r: 16, dano: 15, cor: '#7a2ea8', xp: 4, moeda: 3, vals: 'atira' },
 };
 
+// ═══════════ BOSSES DO FOLCLORE (a cada 2 hordas) ═══════════
+const SV_BOSSES = [
+  { id: 'galinhas',  nome: 'GALINHAS MALDITAS', emoji: '🐔', grupo: 8,
+    hp: 4,   vel: 105, r: 11, dano: 5,  moeda: 3,  cor: '#e8e2d4', ai: 'galinha' },
+  { id: 'saci',      nome: 'SACI-PERERÊ',       emoji: '🌀', grupo: 0,
+    hp: 90,  vel: 120, r: 17, dano: 12, moeda: 30, cor: '#7a3a1e', ai: 'saci' },
+  { id: 'curupira',  nome: 'CURUPIRA',          emoji: '🔥', grupo: 0,
+    hp: 130, vel: 140, r: 18, dano: 14, moeda: 36, cor: '#d86020', ai: 'curupira' },
+  { id: 'cuca',      nome: 'CUCA',              emoji: '🐊', grupo: 0,
+    hp: 180, vel: 55,  r: 24, dano: 16, moeda: 44, cor: '#4a8a3a', ai: 'cuca' },
+  { id: 'boitata',   nome: 'BOITATÁ',           emoji: '🔥', grupo: 0,
+    hp: 240, vel: 130, r: 20, dano: 15, moeda: 52, cor: '#ff7a20', ai: 'boitata' },
+  { id: 'lobisomem', nome: 'LOBISOMEM',         emoji: '🐺', grupo: 0,
+    hp: 320, vel: 150, r: 20, dano: 18, moeda: 70, cor: '#3a3a44', ai: 'lobisomem' },
+];
+function bossDaHorda(n) {                                        // horda 2→boss 0, 4→1, ... 12→5
+  if (n % CFG.SV_BOSS_CADA !== 0) return null;
+  const idx = n / CFG.SV_BOSS_CADA - 1;
+  return idx >= 0 && idx < CFG.SV_BOSS_TOTAL ? idx : null;
+}
+function spawnBossSv(idx) {
+  const sv = G.sv, b = SV_BOSSES[idx];
+  const esc = 1 + Math.max(0, sv.horda - 2) * 0.05;              // leve escala
+  const qtd = b.grupo || 1;
+  for (let k = 0; k < qtd; k++) {
+    const ang = (k / qtd) * 6.28 + Math.random() * 0.5, dist = 340 + Math.random() * 80;
+    let x = clamp(sv.x + Math.cos(ang) * dist, 60, MW - 60);
+    let y = clamp(sv.y + Math.sin(ang) * dist, 60, MH - 60);
+    const hp = Math.round(b.hp * esc);
+    const e = { tipo: 'boss', boss: true, bossId: b.id, bossIdx: idx, ai: b.ai, nome: b.nome,
+      x, y, hp, hpMax: hp, vel: b.vel, r: b.r, dano: b.dano, cor: b.cor, xp: 6, moeda: b.moeda,
+      vals: 'boss', flash: 0, faseA: Math.random() * 6.28, atkT: 0, morto: 0, empurraX: 0, empurraY: 0,
+      stun: 0, windup: 0, preCarga: 0, bote: 0, marcado: false, investindo: 0,
+      fase2: false, telT: 0, invocT: 4, conjT: 0, dashN: 0, segs: null };
+    if (b.ai === 'boitata') { e.segs = []; for (let s2 = 0; s2 < 11; s2++) e.segs.push({ x, y }); e.rastro = []; }
+    sv.inimigos.push(e);
+  }
+}
 function spawnBichoSv() {
   const sv = G.sv, n = sv.horda;
   // sorteia tipo conforme progressão
@@ -4123,7 +4173,7 @@ function moverJogadorSv(dt) {
   if (sv.andando) {
     dx /= mag || 1; dy /= mag || 1;
     const lamaMul = (SV_CLIMAS[sv.clima] || {}).lama || 1;
-    const vel = CFG.SV_VEL * sv.velMul * lamaMul;               // terreno molhado/gelado deixa mais lento
+    const vel = CFG.SV_VEL * sv.velMul * lamaMul * (sv.rage > 0 ? 1.32 : 1);  // FÚRIA acelera
     sv.x = clamp(sv.x + dx * vel * dt, 20, MW - 20);
     sv.y = clamp(sv.y + dy * vel * dt, 20, MH - 20);
     sv.frame += dt * 8; sv.mira = { x: dx, y: dy }; sv.olhar = dx < 0 ? -1 : dx > 0 ? 1 : sv.olhar;
@@ -4157,6 +4207,9 @@ function atualizarInimigosSv(dt) {
     let vel = e.vel;
     // decai o telegraph visual
     if (e.windup > 0) e.windup -= dt;
+    // ═══ BOSSES DO FOLCLORE ═══
+    if (e.boss) { atualizarBossSv(e, dt, dist, nx, ny); }
+    else
     // comportamentos (com TELEGRAPH antes do golpe)
     if (e.vals === 'investida') {                              // porco: recua e AVISA antes de investir
       e.atkT -= dt;
@@ -4203,8 +4256,108 @@ function atualizarInimigosSv(dt) {
   }
 }
 
+// ─── IA dos bosses do folclore ───
+function atualizarBossSv(e, dt, dist, nx, ny) {
+  const sv = G.sv;
+  e.atkT -= dt;
+  if (e.ai === 'galinha') {                                    // corre errático, bica, foge um pouco
+    e.zigT = (e.zigT || 0) - dt;
+    if (e.zigT <= 0) { e.zigT = rand(0.4, 0.9); e.zx = nx + rand(-0.9, 0.9); e.zy = ny + rand(-0.9, 0.9);
+      if (dist < 60 && Math.random() < 0.35) { e.zx = -nx; e.zy = -ny; }      // recua assustada
+      if (Math.random() < 0.3) svFlut('có có!', e.x, e.y - e.r - 8, '#fff'); }
+    const m = Math.hypot(e.zx || nx, e.zy || ny) || 1;
+    e.x += (e.zx / m) * e.vel * dt; e.y += (e.zy / m) * e.vel * dt;
+  } else if (e.ai === 'saci') {                                // teleporta em redemoinho + rajada de vento
+    e.telT -= dt;
+    if (e.telT <= 0 && dist > 90) { e.telT = rand(2.2, 3.4);
+      for (let k = 0; k < 10; k++) sv.particulas.push({ tipo: 'faisca', x: e.x, y: e.y, vx: rand(-160, 160), vy: rand(-220, -40), t: 0, vida: 0.4 });
+      const a = rand(0, 6.28), d2 = rand(90, 150);
+      e.x = clamp(sv.x + Math.cos(a) * d2, 40, MW - 40); e.y = clamp(sv.y + Math.sin(a) * d2, 40, MH - 40);
+      svFlut('🌀', e.x, e.y - e.r - 8, '#8fd6e8'); if (SFX.spray) SFX.spray(); }
+    else { e.x += nx * e.vel * 0.55 * dt; e.y += ny * e.vel * 0.55 * dt; }
+    if (e.atkT <= 0 && dist < 240) { e.atkT = 2.6;             // leque de 3 rajadas
+      for (let k = -1; k <= 1; k++) { const aa = Math.atan2(ny, nx) + k * 0.3;
+        sv.balas.push({ x: e.x, y: e.y - 8, vx: Math.cos(aa) * 240, vy: Math.sin(aa) * 240,
+          dano: e.dano * 0.6 | 0, r: 6, inimigo: true, t: 0, cor: '#a8d8e8' }); } }
+  } else if (e.ai === 'curupira') {                            // pés virados: anda "de costas" e invoca bichos
+    e.invocT -= dt;
+    const dir = (Math.sin(e.faseA * 0.7) > -0.3) ? 1 : -0.8;   // às vezes anda pro lado errado (confunde)
+    e.x += nx * e.vel * dir * 0.7 * dt; e.y += ny * e.vel * dir * 0.7 * dt;
+    if (e.invocT <= 0) { e.invocT = 5;
+      svFlut('🌳 protejam a mata!', e.x, e.y - e.r - 12, '#8fe36a');
+      const antes = sv.inimigos.length; spawnBichoSv(); spawnBichoSv();
+      for (let k = antes; k < sv.inimigos.length; k++) { sv.inimigos[k].x = clamp(e.x + rand(-50, 50), 40, MW - 40); sv.inimigos[k].y = clamp(e.y + rand(-50, 50), 40, MH - 40); } }
+    if (e.atkT <= 0 && dist < 190 && e.investindo <= 0) { e.atkT = 2.2; e.investindo = 0.5; e.ivx = nx; e.ivy = ny; e.windup = 0.3; }
+    if (e.investindo > 0) { e.investindo -= dt; e.x += e.ivx * e.vel * 1.9 * dt; e.y += e.ivy * e.vel * 1.9 * dt; }
+  } else if (e.ai === 'cuca') {                                // jacaré bruxa: conjura espiral de bolhas
+    e.conjT -= dt;
+    if (e.conjT <= 0) { e.conjurando = 1.4; e.conjT = 4.2; e.windup = 1.4; }
+    if (e.conjurando > 0) { e.conjurando -= dt;                // parada: janela de dano!
+      if (e.conjurando <= 0) { const base = rand(0, 6.28);
+        for (let k = 0; k < 8; k++) { const aa = base + k * 0.785;
+          sv.balas.push({ x: e.x, y: e.y, vx: Math.cos(aa) * 170, vy: Math.sin(aa) * 170,
+            dano: e.dano * 0.7 | 0, r: 7, inimigo: true, t: 0, cor: '#c060e8' }); }
+        if (SFX.praga) SFX.praga(); }
+    } else { e.x += nx * e.vel * dt; e.y += ny * e.vel * dt; }
+  } else if (e.ai === 'boitata') {                             // cobra de fogo: serpenteia e deixa RASTRO que queima
+    const sway = Math.sin(e.faseA * 2.2) * 0.7;
+    const ax = nx * Math.cos(sway) - ny * Math.sin(sway), ay = nx * Math.sin(sway) + ny * Math.cos(sway);
+    e.x += ax * e.vel * dt; e.y += ay * e.vel * dt;
+    // segmentos seguem a cabeça
+    let px2 = e.x, py2 = e.y;
+    for (const s2 of e.segs) { const ddx = px2 - s2.x, ddy = py2 - s2.y, dd = Math.hypot(ddx, ddy) || 1;
+      const alvo = e.r * 1.35; if (dd > alvo) { s2.x += ddx / dd * (dd - alvo); s2.y += ddy / dd * (dd - alvo); }
+      px2 = s2.x; py2 = s2.y; }
+    // rastro de fogo (hazard)
+    e.rastroT = (e.rastroT || 0) - dt;
+    if (e.rastroT <= 0) { e.rastroT = 0.22; e.rastro.push({ x: e.segs[4].x, y: e.segs[4].y, t: 0, vida: 2.6 }); }
+    for (let i = e.rastro.length - 1; i >= 0; i--) { const f = e.rastro[i]; f.t += dt;
+      if (f.t > f.vida) { e.rastro.splice(i, 1); continue; }
+      if (sv.invT <= 0 && sv.rolando <= 0 && dist2(f.x, f.y, sv.x, sv.y) < 22 * 22) svDanoJogador(4, (sv.x - f.x) / 22, (sv.y - f.y) / 22, null); }
+  } else if (e.ai === 'lobisomem') {                           // série de 3 investidas; frenesi na metade
+    if (!e.fase2 && e.hp < e.hpMax * 0.5) { e.fase2 = true; e.vel *= 1.3;
+      svFlut('🐺 AUUUUU!', e.x, e.y - e.r - 14, '#ff5a40'); if (SFX.alarme) SFX.alarme();
+      sv.shake = 1.4; }
+    if (e.investindo > 0) { e.investindo -= dt; e.x += e.ivx * e.vel * 2.1 * dt; e.y += e.ivy * e.vel * 2.1 * dt;
+      if (e.investindo <= 0 && e.dashN > 0) { e.preCarga = 0.22; e.windup = 0.22; } }
+    else if (e.preCarga > 0) { e.preCarga -= dt; e.x -= nx * 24 * dt; e.y -= ny * 24 * dt;
+      if (e.preCarga <= 0) { e.dashN--; e.investindo = 0.34; e.ivx = nx; e.ivy = ny; } }
+    else if (e.atkT <= 0 && dist < 260) { e.atkT = e.fase2 ? 2.2 : 3.2; e.dashN = e.fase2 ? 3 : 2; e.preCarga = 0.4; e.windup = 0.4; }
+    else { e.x += nx * e.vel * 0.8 * dt; e.y += ny * e.vel * 0.8 * dt; }
+  }
+  e.x = clamp(e.x, 30, MW - 30); e.y = clamp(e.y, 30, MH - 30);
+}
+
+// ─── vitória (6 bosses) + placar do dispositivo ───
+function svVitoriaSv() {
+  const sv = G.sv; if (sv.vitoria || sv.fim) return;
+  sv.vitoria = true; sv.fim = true; sv.vivo = true; sv.fimT = 0; sv.emHorda = false;
+  sv.motivoFim = 'vitoria';
+  salvarRankSv('vitoria');
+  if (SFX.recorde) SFX.recorde(); if (SFX.vendona) SFX.vendona();
+}
+function svPontosSv() {
+  const sv = G.sv;
+  return sv.killsTot * 10 + sv.parries * 25 + sv.combos * 50 + sv.bossesMortos * 400 + Math.floor(sv.tempo) * 2 + Math.floor(sv.moedas);
+}
+function lerRankSv() {
+  try { const r = JSON.parse(localStorage.getItem(CFG.CHAVE_SV_RANK) || '[]'); return Array.isArray(r) ? r : []; }
+  catch (e) { return []; }
+}
+function salvarRankSv(status) {
+  const sv = G.sv;
+  const ent = { nome: (G.nomeJogador || 'MECÂNICO').slice(0, 12), pts: svPontosSv(),
+    horda: sv.horda, bosses: sv.bossesMortos, t: Math.floor(sv.tempo), v: status === 'vitoria' ? 1 : 0 };
+  const rank = lerRankSv(); rank.push(ent);
+  rank.sort((a, b) => b.pts - a.pts); rank.length = Math.min(rank.length, 10);
+  try { localStorage.setItem(CFG.CHAVE_SV_RANK, JSON.stringify(rank)); } catch (e) {}
+  sv._rankPos = rank.indexOf(ent);                              // -1 se ficou fora do top 10
+  sv._meuScore = ent.pts;
+}
+
 function svExecutar(e, nx, ny) {                               // riposte: dano crítico no inimigo marcado
   const sv = G.sv;
+  if (e.boss) return;                                          // bosses não podem ser executados
   const dano = Math.max(e.hpMax, 999) * 0 + (e.hpMax * CFG.SV_RIPOSTE_MULT);  // garante matar
   e.marcado = false; e.stun = 0;
   sv.hitStop = 0.1; sv.shake = 0.9; sv.combos++;
@@ -4276,8 +4429,11 @@ function svResolverAtaque(e, nx, ny) {
 
 function svParryComSucesso(e, nx, ny) {
   const sv = G.sv;
-  // atordoa e MARCA o inimigo para execução
-  e.stun = CFG.SV_STUN_DUR; e.marcado = true; e.investindo = 0; e.windup = 0;
+  // atordoa e MARCA o inimigo para execução (bosses: stun curto, sem execução)
+  if (e.boss) { e.stun = 0.7; e.marcado = false; }
+  else { e.stun = CFG.SV_STUN_DUR; e.marcado = true; }
+  e.investindo = 0; e.windup = 0;
+  sv.furia = Math.min(CFG.SV_RAGE_MAX, sv.furia + 16);         // aparar enche a FÚRIA
   // knockback leve no inimigo
   e.empurraX = -nx * 120; e.empurraY = -ny * 120;
   sv.parryT = 0; sv.parryCd = CFG.SV_PARRY_CD; sv.parries++;
@@ -4291,8 +4447,44 @@ function svParryComSucesso(e, nx, ny) {
   if (SFX.parry) SFX.parry(); else if (SFX.raio) SFX.raio();
 }
 
+function svAtivarRage() {
+  const sv = G.sv; if (!sv || !sv.vivo || sv.fim || sv.upOpcoes || G.pausa || sv.tela !== 'jogo') return;
+  if (sv.rage > 0 || sv.furia < CFG.SV_RAGE_MAX) return;
+  sv.rage = CFG.SV_RAGE_DUR; sv.furia = 0; sv.garraT = 0;
+  sv.hitStop = 0.1; sv.shake = 1.6; sv.invT = Math.max(sv.invT, 0.6);
+  svFlut('🐺 AUUUUU!', sv.x, sv.y - 40, '#ff5a40');
+  for (let k = 0; k < 24; k++) { const a = rand(0, 6.28), sp = rand(120, 360);
+    sv.particulas.push({ tipo: k % 2 ? 'faisca' : 'sangue', x: sv.x, y: sv.y - 8, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, t: 0, vida: rand(0.3, 0.6), cor: '#ff5a40' }); }
+  if (SFX.critico) SFX.critico(); if (SFX.alarme) SFX.alarme();
+}
+
+function svGolpeGarras() {                                     // rasgo em arco frontal
+  const sv = G.sv, dir = svDirecaoAtual();
+  const ang = Math.atan2(dir.y, dir.x);
+  const dano = 14 + sv.horda * 2;
+  let acertou = 0;
+  for (const e of sv.inimigos) { if (e.morto) continue;
+    const d = Math.hypot(e.x - sv.x, e.y - sv.y);
+    if (d > CFG.SV_GARRA_ALC + e.r) continue;
+    const aTo = Math.atan2(e.y - sv.y, e.x - sv.x);
+    let da = Math.abs(aTo - ang); if (da > 3.14159) da = 6.28318 - da;
+    if (da > 1.25) continue;
+    svDanoInimigo(e, dano, Math.cos(aTo) * 260, Math.sin(aTo) * 260);
+    acertou++; }
+  if (acertou > 0) { sv.garrasDadas += acertou;
+    if (SFX.corte) SFX.corte(); else if (SFX.praga) SFX.praga(); }
+  for (let k = -1; k <= 1; k++) { const aa = ang + k * 0.3;
+    sv.particulas.push({ tipo: 'garra', x: sv.x + Math.cos(aa) * 26, y: sv.y - 6 + Math.sin(aa) * 26,
+      ang: aa, t: 0, vida: 0.22 }); }
+}
+
 function atualizarSoulsSv(dt) {
   const sv = G.sv; if (!sv.vivo) return;
+  // ── FÚRIA do lobisomem ──
+  if (sv.rage > 0) { sv.rage -= dt;
+    sv.garraT -= dt;
+    if (sv.garraT <= 0) { sv.garraT = CFG.SV_GARRA_CD; svGolpeGarras(); }
+    if (sv.rage <= 0) { sv.rage = 0; svFlut('a fúria passou...', sv.x, sv.y - 30, '#b8c8d8'); } }
   // timers
   if (sv.rolCd > 0) sv.rolCd -= dt;
   if (sv.parryCd > 0) sv.parryCd -= dt;
@@ -4321,6 +4513,7 @@ function svDanoJogador(dano, nx, ny) {
   if (sv.escudo > 0) { const abs = Math.min(sv.escudo, real); sv.escudo -= abs; real -= abs; }
   if (real > 0) sv.hp -= real;
   sv.invT = 0.7; sv.shake = 1; if (SFX.colisao) SFX.colisao();
+  if (sv.rage <= 0) sv.furia = Math.min(CFG.SV_RAGE_MAX, sv.furia + 10);   // sofrer também enche
   svFlut('-' + dano, sv.x, sv.y - 24, '#ff5a4a');
   if (sv.hp <= 0) { sv.hp = 0; svFimSobreviv(); }
 }
@@ -4407,6 +4600,7 @@ function svInimigoMaisProximo(x, y, alcance) {
 
 function svDanoInimigo(e, dano, kx, ky) {
   const sv = G.sv;
+  if (sv.rage <= 0) sv.furia = Math.min(CFG.SV_RAGE_MAX, sv.furia + dano * 0.5);  // ferir enche a FÚRIA
   e.hp -= dano; e.flash = 0.1;
   if (kx || ky) { e.empurraX = (e.empurraX || 0) + kx; e.empurraY = (e.empurraY || 0) + ky; }
   for (let k = 0; k < 3; k++) sv.particulas.push({ tipo: 'sangue', x: e.x, y: e.y, vx: rand(-80, 80), vy: rand(-80, 80), t: 0, vida: 0.35, cor: e.cor });
@@ -4749,6 +4943,7 @@ function svFimSobreviv() {
   const sv = G.sv; if (sv.fim) return;
   sv.fim = true; sv.vivo = false; sv.fimT = 0;
   if (!sv.motivoFim) sv.motivoFim = 'morte';
+  salvarRankSv(sv.motivoFim);
   const score = sv.horda;
   if (score > sv.recorde) { sv.recorde = score; sv.novoRec = true;
     try { localStorage.setItem(CFG.CHAVE_SV, score); } catch (e) {} }
@@ -4822,13 +5017,23 @@ function atualizarSobreviv(dt) {
     sv.ondaT += dt; sv.spawnT -= dt;
     const restam = sv.aVencer - sv.mortos;
     const vivos = sv.inimigos.filter(e => !e.morto).length;
-    // spawna até ter inimigos suficientes, respeitando um máximo em tela
-    const maxTela = Math.min(6 + sv.horda * 2, 26);
-    if (sv.spawnT <= 0 && vivos < maxTela && (sv.mortos + vivos) < sv.aVencer) {
-      spawnBichoSv(); sv.spawnT = Math.max(0.3, 1.4 - sv.horda * 0.06);
+    const bIdx = bossDaHorda(sv.horda);
+    if (bIdx != null) {                                          // horda de boss: spawna 1x
+      if (!sv.bossSpawned) { sv.bossSpawned = true; spawnBossSv(bIdx);
+        sv.aVencer = SV_BOSSES[bIdx].grupo || 1; sv.mortos = 0;   // a horda de boss fecha ao matar o boss/grupo
+        if (SFX.alarme) SFX.alarme(); }
+    } else {
+      // spawna até ter inimigos suficientes, respeitando um máximo em tela
+      const maxTela = Math.min(6 + sv.horda * 2, 26);
+      if (sv.spawnT <= 0 && vivos < maxTela && (sv.mortos + vivos) < sv.aVencer) {
+        spawnBichoSv(); sv.spawnT = Math.max(0.3, 1.4 - sv.horda * 0.06);
+      }
     }
     // horda vencida?
     if (sv.mortos >= sv.aVencer && vivos === 0) {
+      // ► matou o último boss? VITÓRIA!
+      if (bIdx != null) { sv.bossesMortos = bIdx + 1;
+        if (sv.bossesMortos >= CFG.SV_BOSS_TOTAL) { svVitoriaSv(); return; } }
       sv.emHorda = false;
       // MESTRE oferece upgrade
       sv.mestreAtual = MEC_TALENTOS[randi(0, MEC_TALENTOS.length - 1)];
@@ -5273,10 +5478,27 @@ function renderSobreviv() {
     ctx.strokeStyle = '#7a5a10'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(d.x, d.y + bob, 5, 0, 7); ctx.stroke();
   }
 
+  // rastro de fogo do BOITATÁ (queima o chão)
+  for (const e of sv.inimigos) if (e.boss && e.rastro) for (const f of e.rastro) {
+    const fa = 1 - f.t / f.vida, fl2 = 0.7 + 0.3 * Math.sin((sv.tempo + f.x) * 12);
+    ctx.globalAlpha = fa * 0.85;
+    ctx.fillStyle = '#e84a10'; ctx.beginPath(); ctx.arc(f.x, f.y, 12 * fl2, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ffb020'; ctx.beginPath(); ctx.arc(f.x, f.y - 3, 7 * fl2, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fff0a0'; ctx.beginPath(); ctx.arc(f.x, f.y - 5, 3 * fl2, 0, 7); ctx.fill();
+    ctx.globalAlpha = 1; }
   // sangue/partículas no chão
   for (const p of sv.particulas) if (p.tipo === 'sangue') {
     const a = 1 - p.t / p.vida; ctx.globalAlpha = a;
     ctx.fillStyle = p.cor; ctx.fillRect(p.x - 2, p.y - 2, 4, 4); ctx.globalAlpha = 1;
+  }
+  // riscos de GARRA (fúria do lobisomem)
+  for (const p of sv.particulas) if (p.tipo === 'garra') {
+    const a = 1 - p.t / p.vida; ctx.globalAlpha = a;
+    ctx.strokeStyle = '#ffe0d0'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+    for (let k = -1; k <= 1; k++) { ctx.beginPath();
+      ctx.moveTo(p.x - Math.cos(p.ang) * 16 + k * 4, p.y - Math.sin(p.ang) * 16 + k * 5);
+      ctx.lineTo(p.x + Math.cos(p.ang) * 16 + k * 4, p.y + Math.sin(p.ang) * 16 + k * 5); ctx.stroke(); }
+    ctx.globalAlpha = 1;
   }
 
   // ordena inimigos + jogador por Y (profundidade top-down)
@@ -5451,11 +5673,81 @@ function desenharMaquinaSv(m) {
   ctx.textAlign = 'left';
 }
 
+function desenharLoboJogador(corSel, passo) {                  // o mecânico transformado (em 0,0, pés no chão)
+  const sv = G.sv, t = sv.tempo;
+  // pernas digitígradas
+  ctx.fillStyle = '#33333c';
+  ctx.fillRect(-10, -12 + passo, 7, 12); ctx.fillRect(3, -12 - passo, 7, 12);
+  ctx.fillStyle = '#23232c'; ctx.fillRect(-11, -3 + passo, 9, 4); ctx.fillRect(2, -3 - passo, 9, 4);  // patas
+  // cauda
+  ctx.strokeStyle = '#3a3a44'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-10, -18); ctx.quadraticCurveTo(-22, -22 + Math.sin(t * 6) * 3, -26, -12); ctx.stroke();
+  // farrapos do macacão (identidade da cor escolhida)
+  ctx.fillStyle = corSel.cor || '#3a6ea5';
+  ctx.beginPath(); ctx.moveTo(-11, -16); ctx.lineTo(11, -16); ctx.lineTo(9, -9); ctx.lineTo(5, -13); ctx.lineTo(1, -8);
+  ctx.lineTo(-3, -13); ctx.lineTo(-7, -8); ctx.lineTo(-11, -12); ctx.closePath(); ctx.fill();
+  // torso peludo curvado
+  ctx.fillStyle = '#3a3a44'; ctx.beginPath(); ctx.ellipse(0, -24, 13, 12, -0.1, 0, 7); ctx.fill();
+  ctx.fillStyle = '#4c4c58'; ctx.beginPath(); ctx.ellipse(-1.5, -26, 10, 9, -0.1, 0, 7); ctx.fill();
+  // pelos espetados nas costas
+  ctx.strokeStyle = '#23232c'; ctx.lineWidth = 1.8;
+  for (let k = 0; k < 5; k++) { const aa = 2.7 + k * 0.24;
+    ctx.beginPath(); ctx.moveTo(Math.cos(aa) * 11, -24 + Math.sin(aa) * 11);
+    ctx.lineTo(Math.cos(aa) * 16, -24 + Math.sin(aa) * 16); ctx.stroke(); }
+  // braços + GARRAS enormes
+  for (const sgn of [-1, 1]) { ctx.save(); ctx.translate(sgn * 11, -26);
+    ctx.rotate(sgn * (0.5 + Math.sin(t * 10 + sgn) * 0.22));
+    ctx.fillStyle = '#3a3a44'; ctx.fillRect(-3, 0, 6, 13);
+    ctx.fillStyle = '#4c4c58'; ctx.beginPath(); ctx.arc(0, 14, 4.5, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#f0ead8'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    for (let k = -1; k <= 1; k++) { ctx.beginPath(); ctx.moveTo(k * 3, 15); ctx.lineTo(k * 4.2, 22); ctx.stroke(); }
+    ctx.restore(); }
+  // cabeça de lobo
+  ctx.fillStyle = '#4c4c58'; ctx.beginPath(); ctx.arc(2, -38, 9.5, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(10, -36, 7, 4.6, 0.1, 0, 7); ctx.fill();       // focinho
+  ctx.fillStyle = '#14100c'; ctx.beginPath(); ctx.arc(16.5, -35.5, 2, 0, 7); ctx.fill();
+  // orelhas
+  ctx.fillStyle = '#3a3a44';
+  ctx.beginPath(); ctx.moveTo(-4, -44); ctx.lineTo(-1.5, -54); ctx.lineTo(3, -45); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(4.5, -45); ctx.lineTo(8.5, -53); ctx.lineTo(10.5, -43); ctx.closePath(); ctx.fill();
+  // resto do capacete (rachado, de lado — memória do mecânico)
+  ctx.fillStyle = '#c89810'; ctx.beginPath(); ctx.arc(-6, -44, 5, 3.4, 6.1); ctx.fill();
+  // olhos vermelhos com glow + presas
+  ctx.shadowColor = 'rgba(255,40,30,.95)'; ctx.shadowBlur = 8;
+  ctx.fillStyle = '#ff3020'; ctx.beginPath(); ctx.arc(2.5, -40, 1.9, 0, 7); ctx.arc(8, -39, 1.7, 0, 7); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#f0e8d8';
+  ctx.beginPath(); ctx.moveTo(8, -33.5); ctx.lineTo(9.4, -30.4); ctx.lineTo(10.8, -33.2); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(12.5, -33.2); ctx.lineTo(13.9, -30.6); ctx.lineTo(15, -33); ctx.fill();
+}
+
 function desenharAvatarSv() {
   const sv = G.sv;
   const frames = SV_AVATAR[svCorAvatar().id];
   const fr = sv.andando ? (Math.floor(sv.frame) % 4) : 0;
   const img = frames[fr];
+  // ═══ MODO FÚRIA: o mecânico é um LOBISOMEM ═══
+  if (sv.rage > 0) {
+    const corSel = SV_CORES[sv.corIdx] || SV_CORES[0];
+    const passo = sv.andando ? Math.sin(sv.frame * 3.14) * 3 : 0;
+    // aura vermelha pulsante no chão
+    const pul = 0.5 + 0.5 * Math.sin(sv.tempo * 9);
+    ctx.strokeStyle = 'rgba(255,60,40,' + (0.35 + pul * 0.35).toFixed(2) + ')';
+    ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(sv.x, sv.y, 24 + pul * 4, 0, 7); ctx.stroke();
+    // aviso de fim (pisca nos últimos 2s)
+    const some = sv.rage < 2 && Math.floor(sv.rage * 8) % 2 === 0;
+    ctx.save(); ctx.translate(sv.x, sv.y);
+    if (sv.olhar < 0) ctx.scale(-1, 1);
+    if (sv.rolando > 0) { const prog = 1 - sv.rolando / CFG.SV_ROLL_DUR;
+      ctx.translate(0, -18); ctx.rotate(prog * 6.28); ctx.translate(0, 18); }
+    if (some) ctx.globalAlpha = 0.55;
+    desenharLoboJogador(corSel, passo);
+    ctx.globalAlpha = 1; ctx.restore();
+    // fumacinha vermelha subindo
+    if (Math.random() < 0.3) sv.particulas.push({ tipo: 'sangue', x: sv.x + rand(-10, 10), y: sv.y - 30,
+      vx: rand(-14, 14), vy: rand(-50, -20), t: 0, vida: 0.5, cor: 'rgba(255,70,50,.7)' });
+    return;
+  }
   // ghost trail durante a rolada (rastro de velocidade)
   if (sv.rolando > 0) {
     for (let g = 2; g >= 1; g--) {
@@ -5506,7 +5798,167 @@ function desenharAvatarSv() {
       ctx.restore(); } }
 }
 
+function desenharBossSv(e) {
+  const sv = G.sv, flash = e.flash > 0, morrendo = e.morto > 0;
+  ctx.save(); ctx.translate(e.x, e.y);
+  if (morrendo) { ctx.globalAlpha = clamp(e.morto / 0.35, 0, 1); ctx.scale(1.15, 0.85); }
+  const bob = Math.sin(e.faseA) * 2, R = e.r;
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.beginPath(); ctx.ellipse(0, R * 0.75, R * 1.05, R * 0.4, 0, 0, 7); ctx.fill();
+  const olhar = (sv.x - e.x) < 0 ? -1 : 1; ctx.scale(olhar, 1);
+  const F = c => flash ? '#fff' : c;
+
+  if (e.ai === 'galinha') {
+    // corpo branco rechonchudo + crista + bico
+    ctx.fillStyle = F('#eee8da'); ctx.beginPath(); ctx.ellipse(0, bob, R * 1.05, R * 0.9, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#fff'); ctx.beginPath(); ctx.ellipse(-R * 0.15, bob - R * 0.2, R * 0.65, R * 0.5, 0, 0, 7); ctx.fill();
+    // asa
+    ctx.fillStyle = F('#d8d0be'); ctx.beginPath(); ctx.ellipse(-R * 0.2, bob + R * 0.1, R * 0.5, R * 0.35, 0.3 + Math.sin(e.faseA * 6) * 0.15, 0, 7); ctx.fill();
+    // cabeça
+    ctx.fillStyle = F('#f4efe2'); ctx.beginPath(); ctx.arc(R * 0.75, bob - R * 0.55, R * 0.42, 0, 7); ctx.fill();
+    // crista + barbela
+    ctx.fillStyle = F('#e03028');
+    ctx.beginPath(); ctx.arc(R * 0.62, bob - R * 0.95, R * 0.14, 0, 7); ctx.arc(R * 0.78, bob - R * 1.0, R * 0.15, 0, 7); ctx.arc(R * 0.93, bob - R * 0.92, R * 0.13, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(R * 0.85, bob - R * 0.2, R * 0.1, R * 0.17, 0, 0, 7); ctx.fill();
+    // bico + olho
+    ctx.fillStyle = F('#e8a020'); ctx.beginPath(); ctx.moveTo(R * 1.1, bob - R * 0.6); ctx.lineTo(R * 1.45, bob - R * 0.5); ctx.lineTo(R * 1.1, bob - R * 0.38); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#1a1206'; ctx.beginPath(); ctx.arc(R * 0.82, bob - R * 0.62, R * 0.09, 0, 7); ctx.fill();
+    // patas
+    ctx.strokeStyle = F('#e8a020'); ctx.lineWidth = 2;
+    const pf = Math.sin(e.faseA * 8) * R * 0.2;
+    ctx.beginPath(); ctx.moveTo(-R * 0.2, R * 0.7); ctx.lineTo(-R * 0.2 + pf, R * 1.05); ctx.moveTo(R * 0.25, R * 0.7); ctx.lineTo(R * 0.25 - pf, R * 1.05); ctx.stroke();
+  } else if (e.ai === 'saci') {
+    // redemoinho na base
+    ctx.strokeStyle = 'rgba(160,210,230,.55)'; ctx.lineWidth = 2.5;
+    for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.arc(0, R * 0.55, R * (0.4 + k * 0.28), e.faseA * 3 + k, e.faseA * 3 + k + 4); ctx.stroke(); }
+    // UMA perna só
+    ctx.fillStyle = F('#4a2c16'); ctx.fillRect(-R * 0.14, bob + R * 0.1, R * 0.28, R * 0.6);
+    // corpo + calção vermelho
+    ctx.fillStyle = F('#5a3620'); ctx.beginPath(); ctx.ellipse(0, bob - R * 0.25, R * 0.62, R * 0.62, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#c8281e'); ctx.fillRect(-R * 0.5, bob - R * 0.05, R, R * 0.3);
+    // braços com cachimbo
+    ctx.strokeStyle = F('#4a2c16'); ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(R * 0.4, bob - R * 0.3); ctx.lineTo(R * 0.85, bob - R * 0.6); ctx.stroke();
+    ctx.fillStyle = F('#8a5a2a'); ctx.fillRect(R * 0.8, bob - R * 0.75, R * 0.3, R * 0.12);
+    for (let k = 0; k < 2; k++) { ctx.fillStyle = 'rgba(200,200,210,' + (0.4 - k * 0.15) + ')';
+      ctx.beginPath(); ctx.arc(R * 1.0 + k * 5, bob - R * 0.95 - k * 8 - Math.sin(e.faseA * 2) * 3, 3 + k * 2, 0, 7); ctx.fill(); }
+    // cabeça + GORRO VERMELHO
+    ctx.fillStyle = F('#5a3620'); ctx.beginPath(); ctx.arc(0, bob - R * 0.85, R * 0.4, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#e03028'); ctx.beginPath();
+    ctx.moveTo(-R * 0.42, bob - R * 0.9); ctx.quadraticCurveTo(0, bob - R * 1.9, R * 0.5, bob - R * 1.15);
+    ctx.quadraticCurveTo(R * 0.1, bob - R * 1.15, -R * 0.42, bob - R * 0.9); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-R * 0.1, bob - R * 0.9, R * 0.1, 0, 7); ctx.arc(R * 0.15, bob - R * 0.9, R * 0.1, 0, 7); ctx.fill();
+    ctx.fillStyle = '#1a1206'; ctx.beginPath(); ctx.arc(-R * 0.08, bob - R * 0.9, R * 0.05, 0, 7); ctx.arc(R * 0.17, bob - R * 0.9, R * 0.05, 0, 7); ctx.fill();
+  } else if (e.ai === 'curupira') {
+    // pernas com PÉS VIRADOS PRA TRÁS
+    ctx.fillStyle = F('#7a4a24');
+    ctx.fillRect(-R * 0.4, bob + R * 0.15, R * 0.26, R * 0.55); ctx.fillRect(R * 0.14, bob + R * 0.15, R * 0.26, R * 0.55);
+    ctx.fillStyle = F('#5a3418');
+    ctx.fillRect(-R * 0.75, bob + R * 0.6, R * 0.5, R * 0.2); ctx.fillRect(-R * 0.2, bob + R * 0.6, R * 0.5, R * 0.2);  // pés apontam pra trás!
+    // corpo peludo
+    ctx.fillStyle = F('#8a5428'); ctx.beginPath(); ctx.ellipse(0, bob - R * 0.15, R * 0.68, R * 0.72, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#a06a34'); ctx.beginPath(); ctx.ellipse(-R * 0.12, bob - R * 0.3, R * 0.45, R * 0.45, 0, 0, 7); ctx.fill();
+    // cabeça + CABELO DE FOGO
+    ctx.fillStyle = F('#9a6030'); ctx.beginPath(); ctx.arc(0, bob - R * 0.85, R * 0.42, 0, 7); ctx.fill();
+    for (let k = 0; k < 6; k++) { const fx = -R * 0.35 + k * R * 0.14, fh = R * (0.5 + (k % 2) * 0.25) + Math.sin(e.faseA * 7 + k) * R * 0.1;
+      ctx.fillStyle = F(k % 2 ? '#ff7a20' : '#ffb020'); ctx.beginPath();
+      ctx.moveTo(fx - R * 0.07, bob - R * 1.15); ctx.quadraticCurveTo(fx, bob - R * 1.15 - fh, fx + R * 0.07, bob - R * 1.15); ctx.fill(); }
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-R * 0.12, bob - R * 0.88, R * 0.1, 0, 7); ctx.arc(R * 0.14, bob - R * 0.88, R * 0.1, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#20a040'); ctx.beginPath(); ctx.arc(-R * 0.11, bob - R * 0.88, R * 0.05, 0, 7); ctx.arc(R * 0.15, bob - R * 0.88, R * 0.05, 0, 7); ctx.fill();
+  } else if (e.ai === 'cuca') {
+    const conj = e.conjurando > 0;
+    // corpo de jacaré verde
+    ctx.fillStyle = F('#3e7a30'); ctx.beginPath(); ctx.ellipse(0, bob, R * 1.05, R * 0.85, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#4f9640'); ctx.beginPath(); ctx.ellipse(-R * 0.1, bob - R * 0.15, R * 0.85, R * 0.62, 0, 0, 7); ctx.fill();
+    // barriga clara + escamas
+    ctx.fillStyle = F('#c8d8a0'); ctx.beginPath(); ctx.ellipse(R * 0.15, bob + R * 0.3, R * 0.6, R * 0.35, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#2e5a22'); for (let k = 0; k < 5; k++) { ctx.beginPath();
+      ctx.moveTo(-R * 0.6 + k * R * 0.3, bob - R * 0.65); ctx.lineTo(-R * 0.48 + k * R * 0.3, bob - R * 0.9); ctx.lineTo(-R * 0.36 + k * R * 0.3, bob - R * 0.65); ctx.fill(); }
+    // focinho de jacaré + dentes
+    ctx.fillStyle = F('#4f9640'); ctx.beginPath(); ctx.ellipse(R * 0.95, bob - R * 0.05, R * 0.5, R * 0.28, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fff'; for (let k = 0; k < 4; k++) ctx.fillRect(R * (0.72 + k * 0.16), bob + R * 0.12, R * 0.07, R * 0.12);
+    // CABELO LOIRO (a Cuca!)
+    ctx.fillStyle = F('#e8c840');
+    ctx.beginPath(); ctx.ellipse(-R * 0.05, bob - R * 0.75, R * 0.55, R * 0.4, 0, 3.14, 0); ctx.fill();
+    for (let k = 0; k < 4; k++) { ctx.beginPath();
+      ctx.ellipse(-R * 0.5 + k * R * 0.32, bob - R * 0.55, R * 0.12, R * 0.3 + (k % 2) * R * 0.1, 0, 0, 7); ctx.fill(); }
+    // olhos (brilham roxo ao conjurar)
+    ctx.fillStyle = conj ? '#c060e8' : '#ffd020';
+    ctx.beginPath(); ctx.arc(R * 0.35, bob - R * 0.35, R * 0.12, 0, 7); ctx.arc(R * 0.68, bob - R * 0.32, R * 0.12, 0, 7); ctx.fill();
+    ctx.fillStyle = '#1a1206'; ctx.fillRect(R * 0.33, bob - R * 0.45, R * 0.04, R * 0.2); ctx.fillRect(R * 0.66, bob - R * 0.42, R * 0.04, R * 0.2);
+    // aura de conjuração
+    if (conj) { ctx.strokeStyle = 'rgba(192,96,232,' + (0.4 + 0.4 * Math.sin(sv.tempo * 10)).toFixed(2) + ')';
+      ctx.lineWidth = 3; ctx.setLineDash([6, 5]); ctx.beginPath(); ctx.arc(0, bob - R * 0.1, R * 1.35, 0, 7); ctx.stroke(); ctx.setLineDash([]); }
+  } else if (e.ai === 'lobisomem') {
+    const fren = e.fase2;
+    // corpo peludo escuro curvado
+    ctx.fillStyle = F(fren ? '#4a2e34' : '#3a3a44'); ctx.beginPath(); ctx.ellipse(0, bob, R * 0.95, R * 0.95, -0.15, 0, 7); ctx.fill();
+    ctx.fillStyle = F(fren ? '#5e3a40' : '#4c4c58'); ctx.beginPath(); ctx.ellipse(-R * 0.1, bob - R * 0.2, R * 0.72, R * 0.68, -0.15, 0, 7); ctx.fill();
+    // pelos espetados
+    ctx.strokeStyle = F('#23232c'); ctx.lineWidth = 2;
+    for (let k = 0; k < 8; k++) { const aa = 2.6 + k * 0.28;
+      ctx.beginPath(); ctx.moveTo(Math.cos(aa) * R * 0.85, bob + Math.sin(aa) * R * 0.85);
+      ctx.lineTo(Math.cos(aa) * R * 1.15, bob + Math.sin(aa) * R * 1.15); ctx.stroke(); }
+    // cabeça de lobo + focinho
+    ctx.fillStyle = F(fren ? '#5e3a40' : '#4c4c58'); ctx.beginPath(); ctx.arc(R * 0.55, bob - R * 0.6, R * 0.5, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(R * 1.0, bob - R * 0.5, R * 0.38, R * 0.24, 0.15, 0, 7); ctx.fill();
+    ctx.fillStyle = '#14100c'; ctx.beginPath(); ctx.arc(R * 1.32, bob - R * 0.48, R * 0.1, 0, 7); ctx.fill();
+    // orelhas
+    ctx.fillStyle = F(fren ? '#4a2e34' : '#3a3a44');
+    ctx.beginPath(); ctx.moveTo(R * 0.25, bob - R * 0.95); ctx.lineTo(R * 0.38, bob - R * 1.45); ctx.lineTo(R * 0.58, bob - R * 1.0); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(R * 0.62, bob - R * 1.0); ctx.lineTo(R * 0.82, bob - R * 1.38); ctx.lineTo(R * 0.92, bob - R * 0.88); ctx.closePath(); ctx.fill();
+    // boca com PRESAS
+    ctx.fillStyle = '#5a1414'; ctx.beginPath(); ctx.ellipse(R * 1.02, bob - R * 0.32, R * 0.3, R * 0.13, 0.15, 0, 7); ctx.fill();
+    ctx.fillStyle = '#f0e8d8';
+    ctx.beginPath(); ctx.moveTo(R * 0.82, bob - R * 0.38); ctx.lineTo(R * 0.88, bob - R * 0.16); ctx.lineTo(R * 0.94, bob - R * 0.38); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(R * 1.12, bob - R * 0.36); ctx.lineTo(R * 1.18, bob - R * 0.16); ctx.lineTo(R * 1.24, bob - R * 0.36); ctx.fill();
+    // olho (vermelho; brilha no frenesi)
+    ctx.shadowColor = 'rgba(255,40,30,.9)'; ctx.shadowBlur = fren ? 10 : 4;
+    ctx.fillStyle = '#ff3020'; ctx.beginPath(); ctx.arc(R * 0.55, bob - R * 0.68, R * 0.11, 0, 7); ctx.fill();
+    ctx.shadowBlur = 0;
+    // garras dianteiras
+    ctx.strokeStyle = '#e8e0d0'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    for (let k = 0; k < 3; k++) { ctx.beginPath();
+      ctx.moveTo(R * 0.5 + k * 4, bob + R * 0.5); ctx.lineTo(R * 0.62 + k * 4, bob + R * 0.78); ctx.stroke(); }
+  } else if (e.ai === 'boitata') {
+    // segmentos de fogo (cauda→cabeça)
+    for (let i = e.segs.length - 1; i >= 0; i--) { const s2 = e.segs[i], rr2 = R * (1 - i * 0.055);
+      const gl = 0.75 + 0.25 * Math.sin(sv.tempo * 8 + i);
+      ctx.save(); ctx.translate(s2.x - e.x, s2.y - e.y);
+      ctx.fillStyle = F('#c83a08'); ctx.beginPath(); ctx.arc(0, 0, rr2, 0, 7); ctx.fill();
+      ctx.fillStyle = F('#ff7a20'); ctx.beginPath(); ctx.arc(0, -rr2 * 0.15, rr2 * 0.68 * gl, 0, 7); ctx.fill();
+      ctx.fillStyle = F('#ffd23a'); ctx.beginPath(); ctx.arc(0, -rr2 * 0.25, rr2 * 0.34 * gl, 0, 7); ctx.fill();
+      ctx.restore(); }
+    // cabeça flamejante
+    ctx.fillStyle = F('#e84a10'); ctx.beginPath(); ctx.arc(0, bob, R * 1.05, 0, 7); ctx.fill();
+    ctx.fillStyle = F('#ffb020'); ctx.beginPath(); ctx.arc(0, bob - R * 0.12, R * 0.72, 0, 7); ctx.fill();
+    // chamas na cabeça
+    for (let k = 0; k < 5; k++) { const fx = -R * 0.6 + k * R * 0.3, fh = R * 0.6 + Math.sin(e.faseA * 9 + k * 2) * R * 0.25;
+      ctx.fillStyle = F(k % 2 ? '#ff7a20' : '#ffd23a'); ctx.beginPath();
+      ctx.moveTo(fx - R * 0.1, bob - R * 0.7); ctx.quadraticCurveTo(fx, bob - R * 0.7 - fh, fx + R * 0.1, bob - R * 0.7); ctx.fill(); }
+    // OLHOS enormes de fogo branco (a lenda!)
+    ctx.shadowColor = '#fff0a0'; ctx.shadowBlur = 10;
+    ctx.fillStyle = '#fffbe0'; ctx.beginPath(); ctx.arc(-R * 0.3, bob - R * 0.1, R * 0.24, 0, 7); ctx.arc(R * 0.32, bob - R * 0.1, R * 0.24, 0, 7); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#e84a10'; ctx.beginPath(); ctx.arc(-R * 0.3, bob - R * 0.1, R * 0.1, 0, 7); ctx.arc(R * 0.32, bob - R * 0.1, R * 0.1, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+  // telegraph "!" quando arma golpe
+  if (e.windup > 0 && !morrendo) { ctx.fillStyle = 'rgba(255,80,60,' + (0.5 + 0.5 * Math.sin(sv.tempo * 16)).toFixed(2) + ')';
+    ctx.font = '900 16px "Segoe UI", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('!', e.x, e.y - e.r - 16); ctx.textAlign = 'left'; }
+  // estrelas de stun
+  if (e.stun > 0 && !morrendo) { ctx.fillStyle = '#ffe066'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+    for (let k = 0; k < 3; k++) { const a = e.faseA * 1.6 + k * 2.09;
+      ctx.fillText('✦', e.x + Math.cos(a) * 12, e.y - e.r - 14 + Math.sin(a) * 3.5); }
+    ctx.textAlign = 'left'; }
+  // barra de vida individual (galinhas)
+  if (e.hp < e.hpMax && !morrendo && e.ai === 'galinha') { const bw = e.r * 1.8;
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(e.x - bw / 2, e.y - e.r - 9, bw, 3);
+    ctx.fillStyle = '#7fe36a'; ctx.fillRect(e.x - bw / 2, e.y - e.r - 9, bw * (e.hp / e.hpMax), 3); }
+}
+
 function desenharBichoSv(e) {
+  if (e.boss) return desenharBossSv(e);
   const sv = G.sv, flash = e.flash > 0, morrendo = e.morto > 0;
   ctx.save(); ctx.translate(e.x, e.y);
   if (morrendo) { ctx.globalAlpha = clamp(e.morto / 0.35, 0, 1); ctx.scale(1 + (1 - e.morto / 0.35) * 0.3, 1 - (1 - e.morto / 0.35) * 0.3); }
@@ -5700,12 +6152,47 @@ function desenharHUDSv() {
   ctx.fillStyle = baixa ? '#c05a2e' : '#e8c84d'; rr(bx, vgY, vgW * stF, vgH, 3); ctx.fill();
   ctx.fillStyle = 'rgba(255,255,255,.25)'; rr(bx, vgY, vgW * stF, 2, 1); ctx.fill();
 
+  // ── barra de FÚRIA (lobisomem) ──
+  const fuY = vgY + vgH + 4, fuW = Math.round(bw * 0.66);
+  ctx.fillStyle = 'rgba(10,14,8,.8)'; rr(bx - 2, fuY - 2, fuW + 4, 9, 4); ctx.fill();
+  ctx.fillStyle = '#2a1410'; rr(bx, fuY, fuW, 5, 2); ctx.fill();
+  const fuCheia = sv.furia >= CFG.SV_RAGE_MAX;
+  if (sv.rage > 0) { const rgF = sv.rage / CFG.SV_RAGE_DUR;
+    ctx.fillStyle = '#ff4028'; rr(bx, fuY, fuW * rgF, 5, 2); ctx.fill();
+    ctx.fillStyle = '#ffd0c0'; ctx.font = '800 8px "Courier New", monospace';
+    ctx.fillText('🐺 FÚRIA!', bx + fuW + 6, fuY + 6);
+  } else {
+    const fuF = clamp(sv.furia / CFG.SV_RAGE_MAX, 0, 1);
+    const pisc = fuCheia ? 0.6 + 0.4 * Math.sin(sv.tempo * 10) : 1;
+    ctx.globalAlpha = pisc;
+    ctx.fillStyle = fuCheia ? '#ff5a30' : '#a83a20'; rr(bx, fuY, fuW * fuF, 5, 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    if (fuCheia) { ctx.fillStyle = '#ffb0a0'; ctx.font = '800 8px "Courier New", monospace';
+      ctx.fillText(grande ? '🐺!' : '🐺 aperte E', bx + fuW + 6, fuY + 6); }
+  }
+
+  // ── BOSS BAR (topo-centro, quando há boss vivo) ──
+  const bossVivo = sv.inimigos.find(e2 => e2.boss && !e2.morto);
+  if (bossVivo && sv.emHorda) {
+    const bbW = grande ? 300 : 400, bbX = W / 2 - bbW / 2, bbY = grande ? 46 : 52;
+    const soma = sv.inimigos.reduce((a2, e2) => e2.boss && !e2.morto ? a2 + e2.hp : a2, 0);
+    const somaMax = sv.inimigos.reduce((a2, e2) => e2.boss ? a2 + e2.hpMax : a2, 0) || 1;
+    ctx.fillStyle = 'rgba(10,6,6,.85)'; rr(bbX - 4, bbY - 4, bbW + 8, 22, 6); ctx.fill();
+    ctx.strokeStyle = '#a03028'; ctx.lineWidth = 2; rr(bbX - 4, bbY - 4, bbW + 8, 22, 6); ctx.stroke();
+    ctx.fillStyle = '#3a1210'; rr(bbX, bbY, bbW, 8, 3); ctx.fill();
+    ctx.fillStyle = '#e02818'; rr(bbX, bbY, bbW * clamp(soma / somaMax, 0, 1), 8, 3); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.3)'; rr(bbX, bbY, bbW * clamp(soma / somaMax, 0, 1), 2, 1); ctx.fill();
+    ctx.fillStyle = '#ffd0c8'; ctx.font = '800 10px "Courier New", monospace'; ctx.textAlign = 'center';
+    ctx.fillText('☠ ' + bossVivo.nome + ' ☠', W / 2, bbY + 16);
+    ctx.textAlign = 'left';
+  }
+
   // badge de bioma + clima (abaixo da barra de vida)
   const emojiClima = { limpo: '☀️', chuva: '🌧️', vento: '🍂', frio: '❄️' }[sv.clima] || '';
   const nomeB = (SV_BIOMAS[sv.bioma] || {}).nome || '', nomeC = (SV_CLIMAS[sv.clima] || {}).nome || '';
-  ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(10,14,8,.7)'; rr(bx, by + bh + 17, grande ? 170 : 190, 18, 4); ctx.fill();
+  ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(10,14,8,.7)'; rr(bx, by + bh + 30, grande ? 170 : 190, 18, 4); ctx.fill();
   ctx.fillStyle = '#cfe0b8'; ctx.font = '700 10px "Courier New", monospace';
-  ctx.fillText(emojiClima + ' ' + nomeB + ' · ' + nomeC, bx + 6, by + bh + 30);
+  ctx.fillText(emojiClima + ' ' + nomeB + ' · ' + nomeC, bx + 6, by + bh + 43);
 
   // horda + progresso (topo-centro)
   ctx.textAlign = 'center';
@@ -5763,6 +6250,8 @@ function desenharHUDSv() {
     const br = 27;
     const bts = [ { x: W - 52, y: H - 158, ico: '🛡', cb: svAparar, on: sv.parryT > 0 },
                   { x: W - 118, y: H - 126, ico: '🌀', cb: svRolar, on: sv.rolando > 0 } ];
+    if (sv.furia >= CFG.SV_RAGE_MAX || sv.rage > 0)
+      bts.push({ x: W - 52, y: H - 224, ico: '🐺', cb: svAtivarRage, on: sv.rage > 0 });
     for (const b of bts) {
       ctx.fillStyle = b.on ? 'rgba(240,200,60,.4)' : 'rgba(18,26,14,.72)';
       ctx.beginPath(); ctx.arc(b.x, b.y, br, 0, 7); ctx.fill();
@@ -5901,10 +6390,58 @@ function wrapTexto(txt, cx, cy, maxW, lh) {
   linhas.forEach((l, i) => ctx.fillText(l, cx, cy + i * lh));
 }
 
+function desenharVitoriaSvTela(grande) {
+  const sv = G.sv;
+  // chuva de confete dourado
+  for (let i = 0; i < 30; i++) { const cx2 = (i * 97 + sv.fimT * (40 + i * 7)) % W;
+    const cy2 = (i * 53 + sv.fimT * (60 + i * 11)) % H;
+    ctx.fillStyle = ['#ffd94d', '#7fe36a', '#8fd6e8', '#ff8a3a'][i % 4];
+    ctx.globalAlpha = 0.7; ctx.fillRect(cx2, cy2, 4, 6); ctx.globalAlpha = 1; }
+  const pw = grande ? 420 : 560, ph = grande ? 330 : 380;
+  const { x, y } = painel(pw, ph);
+  ctx.textAlign = 'center';
+  const pul = 0.5 + 0.5 * Math.sin(sv.fimT * 4);
+  ctx.shadowColor = 'rgba(255,217,77,.8)'; ctx.shadowBlur = 16 + pul * 14;
+  ctx.fillStyle = '#ffd94d'; ctx.font = '900 ' + (grande ? 24 : 30) + 'px "Segoe UI", sans-serif';
+  ctx.fillText('🏆 VOCÊ SOBREVIVEU AO PESADELO!', W / 2, y + 44);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#cfe0b8'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('os 6 guardiões do folclore foram derrotados, ' + (G.nomeJogador || 'MECÂNICO'), W / 2, y + 66);
+  // pontuação gigante
+  ctx.fillStyle = '#7fe36a'; ctx.font = '900 ' + (grande ? 30 : 38) + 'px "Courier New", monospace';
+  ctx.fillText((sv._meuScore || svPontosSv()) + ' pts', W / 2, y + (grande ? 100 : 108));
+  if (sv._rankPos === 0) { ctx.fillStyle = '#ffd94d'; ctx.font = '800 13px "Courier New", monospace';
+    ctx.fillText('👑 NOVO Nº 1 DO DISPOSITIVO! 👑', W / 2, y + (grande ? 118 : 128)); }
+  // estatísticas em linha
+  ctx.fillStyle = '#9ab890'; ctx.font = '700 11px "Courier New", monospace';
+  ctx.fillText('☠ ' + sv.killsTot + ' bichos · ⚔ ' + sv.parries + ' aparos · 💥 ' + sv.combos + ' execuções · 🐺 ' + sv.garrasDadas + ' garras · ⏱ ' + mmss(Math.floor(sv.tempo)), W / 2, y + (grande ? 136 : 148));
+  // ── PLACAR DO DISPOSITIVO (top 5) ──
+  const rank = lerRankSv().slice(0, 5);
+  const tY = y + (grande ? 154 : 168);
+  ctx.fillStyle = '#8fd6e8'; ctx.font = '800 12px "Courier New", monospace';
+  ctx.fillText('— 🏅 PLACAR DO DISPOSITIVO —', W / 2, tY);
+  rank.forEach((r2, i) => { const Y = tY + 18 + i * 20;
+    const meu = i === sv._rankPos;
+    if (meu) { ctx.fillStyle = 'rgba(255,217,77,.14)'; rr(x + 30, Y - 13, pw - 60, 18, 4); ctx.fill(); }
+    ctx.textAlign = 'left'; ctx.fillStyle = meu ? '#ffd94d' : '#cfe0e8'; ctx.font = '700 12px "Courier New", monospace';
+    ctx.fillText((i + 1) + 'º ' + (r2.v ? '🏆' : '💀') + ' ' + r2.nome, x + 40, Y);
+    ctx.textAlign = 'right';
+    ctx.fillText(r2.pts + ' pts · h' + r2.horda, x + pw - 40, Y); });
+  ctx.textAlign = 'center';
+  if (sv.fimT > 0.8) {
+    const bw = grande ? 160 : 190, bY = y + ph - 44;
+    chip(W / 2 - bw - 8, bY, bw, 32, '🔄 JOGAR DE NOVO', null, true, () => { G.sv.tela = 'selecao'; });
+    chip(W / 2 + 8, bY, bw, 32, '🏠 MENU', null, true, () => { G.fase = 'menu'; });
+  }
+  ctx.textAlign = 'left';
+}
+
 function desenharFimSv() {
   const sv = G.sv;
-  ctx.fillStyle = 'rgba(30,8,8,.92)'; ctx.fillRect(0, 0, W, H);
+  const vit = sv.motivoFim === 'vitoria';
+  ctx.fillStyle = vit ? 'rgba(8,22,10,.94)' : 'rgba(30,8,8,.92)'; ctx.fillRect(0, 0, W, H);
   const grande = MOBILE;
+  if (vit) { desenharVitoriaSvTela(grande); return; }
   const { x, y } = painel(grande ? 400 : 480, grande ? 300 : 320);
   ctx.textAlign = 'center';
   const porColapso = sv.motivoFim === 'colapso';
@@ -5913,7 +6450,9 @@ function desenharFimSv() {
   ctx.fillStyle = '#cfe0b8'; ctx.font = '700 13px "Courier New", monospace';
   ctx.fillText(porColapso ? 'todas as máquinas pararam na horda ' + sv.horda
                           : 'o canavial te engoliu na horda ' + sv.horda, W / 2, y + 84);
-  ctx.font = (grande ? 54 : 64) + 'px sans-serif'; ctx.fillText('🌾', W / 2, y + (grande ? 150 : 164));
+  ctx.fillStyle = '#8fd6e8'; ctx.font = '700 12px "Courier New", monospace';
+  ctx.fillText('🏅 pontuação: ' + (sv._meuScore || svPontosSv()) + (sv._rankPos >= 0 ? '  ·  #' + (sv._rankPos + 1) + ' do placar' : ''), W / 2, y + 104);
+  ctx.font = (grande ? 46 : 56) + 'px sans-serif'; ctx.fillText('🌾', W / 2, y + (grande ? 152 : 166));
   const linhas = [
     ['🌊 Hordas sobrevividas', '' + (sv.horda - 1), '#8fd6e8'],
     ['☠ Bichos eliminados', '' + sv.killsTot, '#ffd94d'],
@@ -8372,7 +8911,10 @@ function desenharCaixaAberta() {
     let rec = '';
     if (cp.id === 'campanha') rec = G.recDias ? '🏆 melhor: ' + G.recDias + 'd · pico ' + $(G.recGrana) : '';
     else if (cp.id === 'survivor') { const r = Number(localStorage.getItem(CFG.CHAVE_SURV)) || 0; rec = r ? '🏆 recorde: ' + mmss(r) : ''; }
-    else if (cp.id === 'horda') { let r = 0; try { r = Number(localStorage.getItem(CFG.CHAVE_SV)) || 0; } catch (e) {} rec = r ? '🏆 recorde: horda ' + r : ''; }
+    else if (cp.id === 'horda') { let r = 0; try { r = Number(localStorage.getItem(CFG.CHAVE_SV)) || 0; } catch (e) {} rec = r ? '🏆 recorde: horda ' + r : '';
+      const rk = lerRankSv().slice(0, 3);
+      if (rk.length) { ctx.fillStyle = '#9ab890'; ctx.font = '700 10px "Courier New", monospace'; ctx.textAlign = 'left';
+        rk.forEach((r2, i) => ctx.fillText((i + 1) + 'º ' + (r2.v ? '🏆' : '💀') + ' ' + r2.nome + ' — ' + r2.pts + ' pts', ix, H / 2 - 30 + i * 14)); } }
     if (rec) { ctx.fillStyle = '#8fd6e8'; ctx.font = '700 12px "Courier New", monospace'; ctx.fillText(rec, ix, H / 2 - 48); }
 
     // extras da CAMPANHA: seletor de dias
@@ -8995,6 +9537,13 @@ const AJUDA_PAGS = [
     'MARCADO: encoste nele para a EXECUÇÃO (mata na hora)!',
     'Aparar projétil do alien REFLETE de volta mais forte.',
     'Errou o aparo? Fica vulnerável um instante (recovery).',
+    'A cada 2 hordas um BOSS DO FOLCLORE aparece (galinhas,',
+    'Saci, Curupira, Cuca, Boitatá e o Lobisomem). Derrote os',
+    '6 e VENÇA o pesadelo — sua pontuação entra no placar',
+    'do dispositivo para outros jogadores verem!',
+    'FÚRIA: ferir e apanhar enche a barra vermelha; cheia,',
+    'aperte E (🐺 no celular) para virar LOBISOMEM por 9s:',
+    'mais veloz e rasgando tudo com as GARRAS!',
     'SHIFT rola com invencibilidade (parado = recua do bicho',
     'mais próximo). Tudo gasta VIGOR (barra amarela) — que',
     'regenera parado e volta com bônus num aparo perfeito.',
@@ -9256,6 +9805,7 @@ window.addEventListener('keydown', e => {
     }
     if (e.code === 'Space') { svAparar(); return; }
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { svRolar(); return; }
+    if (e.code === 'KeyE') { svAtivarRage(); return; }
   }
   if (G.fase === 'survivor') {
     const s = G.surv;
@@ -9528,6 +10078,8 @@ globalThis.__T = {
          sortearAmbienteSv, fazerChaoSv, atualizarClimaSv, SV_BIOMAS, SV_CLIMAS, desenharColapsoSv,
          svRolar, svAparar, atualizarSoulsSv, svResolverAtaque, svExecutar, svDirecaoAtual, svInimigoMaisProximo,
     atualizarIntroSv, desenharIntroSv, pularIntroSv, comecarJogoSv,
+    SV_BOSSES, bossDaHorda, spawnBossSv, atualizarBossSv, svAtivarRage, svGolpeGarras,
+    svVitoriaSv, svPontosSv, lerRankSv, salvarRankSv, prepararHordaSv, desenharBossSv,
          svFimSobreviv, moverJogadorSv, SV_ARMAS, SV_BICHOS, SV_CORES, construirAvatar,
          iniciarSurvivor, atualizarSurvivor, criarInimigo, criarBoss, ganharXP,
          abrirEscolha, escolherMelhoria, fimSurvivor, spawnInimigo,
